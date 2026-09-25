@@ -1,0 +1,13 @@
+rom/
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.ruff_cache/
+.DS_Store
+doc/*.aux
+doc/*.log
+doc/*.out
+doc/*.toc
+dist/
+*.egg-info/

@@ -1,0 +1,817 @@
+# title: ブロック崩し(マシン語)
+# 横向きのブロック崩し。↑↓でパドル、SPACEかENTERで打ち出す。BRK(Esc)でやめる。
+# 同じ名前のbreak.basがCALL &C000で呼ぶ。アセンブラで作ったもので、「;」のあとがニーモニック。
+; ---------------------------------------------------------------------
+; 画面は横120列×縦7ドット。左の90列が遊ぶ場所、右の30列に残りの玉と得点。
+; 左端のパドルで玉を打ち返し、右のブロックの壁を削る。壁と右端のあいだは
+; 空いているので、そこへ回り込ませると壁を裏から削れる。壁はゆっくり左へ
+; 寄ってきて、先端が12列目まで来ると押し切られて玉を1個失う。
+; 玉のyは1/32ドット単位で持つ(32〜224が0〜6段目)。1列進むごとにyが4〜8変わる。xは1歩に1列ずつ進め、
+; 1フレームに2〜3歩。1歩ごとに横、縦の順に動かし、ブロックに当たった
+; 向きで跳ね返す。ブロックは1列6本で、1本を7ビット(縦7段)の1バイトで持つ。
+; 内部RAMの10h〜2Fhを変数に使う。入るときにBASICの値をSAVEへ退避し、
+; 出るときに入れ替えて戻す。そのためゲームが終わるとSAVEに変数が残り、
+; 得点(5桁、1桁1バイト)はC5F6〜C5FA番地からBASICのPEEKで読める。
+; ---------------------------------------------------------------------
+; ---- 入り口 ----
+C000 90        ; LP 10              START: BASICの内部RAMを退避
+C001 00 1F     ; LII 1F
+C003 10 C5 E0  ; LIDP C5E0  (SAVE)
+C006 19        ; EXWD
+C007 02 03     ; LIA 03
+C009 98        ; LP 18
+C00A DB        ; EXAM
+C00B 23        ; CLRA
+C00C 99        ; LP 19
+C00D DB        ; EXAM
+C00E 02 02     ; LIA 02             normal: パドル2段、1フレームに2歩、壁は40フレームで1列
+C010 95        ; LP 15
+C011 DB        ; EXAM
+C012 02 08     ; LIA 08
+C014 9A        ; LP 1A
+C015 DB        ; EXAM
+C016 02 28     ; LIA 28
+C018 AD        ; LP 2D
+C019 DB        ; EXAM
+C01A 10 C5 DF  ; LIDP C5DF  (LEVELSEL)
+C01D 57        ; LDD
+C01E 67 01     ; CPIA 01
+C020 28 0D     ; JRNZP ST_NORM
+C022 02 03     ; LIA 03             easy: パドル3段、1フレームに1.5歩、壁は60フレームで1列
+C024 95        ; LP 15
+C025 DB        ; EXAM
+C026 02 06     ; LIA 06
+C028 9A        ; LP 1A
+C029 DB        ; EXAM
+C02A 02 3C     ; LIA 3C
+C02C AD        ; LP 2D
+C02D DB        ; EXAM
+C02E 23        ; CLRA               ST_NORM:
+C02F 9B        ; LP 1B
+C030 DB        ; EXAM
+C031 23        ; CLRA
+C032 9E        ; LP 1E
+C033 DB        ; EXAM
+C034 23        ; CLRA
+C035 A6        ; LP 26              得点を0に
+C036 00 04     ; LII 04
+C038 1E        ; FILM
+C039 02 02     ; LIA 02
+C03B 94        ; LP 14
+C03C DB        ; EXAM
+C03D 02 01     ; LIA 01             液晶の表示をつけたままにする
+C03F 12 5F     ; LIP 5F  (PORTC)
+C041 DB        ; EXAM
+C042 DF        ; OUTC
+C043 A0        ; LP 20              NEWWALL: 6本ぜんぶ7段そろえる
+C044 02 7F     ; LIA 7F
+C046 00 05     ; LII 05
+C048 1E        ; FILM
+C049 02 2A     ; LIA 2A
+C04B 9C        ; LP 1C
+C04C DB        ; EXAM
+C04D 02 32     ; LIA 32  (WALL0)    RSTWALL:
+C04F 96        ; LP 16
+C050 DB        ; EXAM
+C051 23        ; CLRA
+C052 97        ; LP 17
+C053 DB        ; EXAM
+; ---- パドルに玉を乗せて、打ち出すのを待つ ----
+C054 78 C1 2C  ; CALL C12C  (KEYS)  SERVE:
+C057 78 C1 A3  ; CALL C1A3  (SETBALL)
+C05A 78 C3 17  ; CALL C317  (DRAW)
+C05D 78 C4 17  ; CALL C417  (DELAY)
+C060 6B 08     ; TEST 08            BRK
+C062 7C C1 1A  ; JPNZ C11A  (QUIT)
+C065 78 C1 90  ; CALL C190  (FIRE)
+C068 39 15     ; JRZM SERVE
+C06A 02 02     ; LIA 02
+C06C 03 28     ; LIB 28
+C06E 78 C4 2D  ; CALL C42D  (TONE)
+; ---- 遊んでいるあいだの1フレーム ----
+C071 78 C1 2C  ; CALL C12C  (KEYS)  PLAY:
+C074 97        ; LP 17              壁を寄せる
+C075 70 01     ; ADIM 01
+C077 59        ; LDM
+C078 AD        ; LP 2D              (ADVR)-(ADVT)が正ならまだ
+C079 C7        ; CPMA
+C07A 38 03     ; JRZP PL_ADV0
+C07C 2A 07     ; JRNCP PL_ADV
+C07E 97        ; LP 17              PL_ADV0:
+C07F 23        ; CLRA
+C080 DB        ; EXAM
+C081 96        ; LP 16
+C082 71 01     ; SBIM 01
+C084 78 C1 C2  ; CALL C1C2  (FRONT) PL_ADV: 押し切られたか
+C087 67 0C     ; CPIA 0C  (DANGER)
+C089 7F C0 C7  ; JPC C0C7  (CRUSH)
+C08C 9A        ; LP 1A              今回の歩数 = (端数+速さ)/4
+C08D 59        ; LDM
+C08E 9B        ; LP 1B
+C08F 44        ; ADM
+C090 59        ; LDM
+C091 D1        ; RC
+C092 D2        ; SR
+C093 D1        ; RC
+C094 D2        ; SR
+C095 AB        ; LP 2B
+C096 DB        ; EXAM
+C097 9B        ; LP 1B
+C098 60 03     ; ANIM 03
+C09A AB        ; LP 2B              PL_STEP:
+C09B 71 01     ; SBIM 01
+C09D 3A 12     ; JRCP PL_DRAW
+C09F 78 C1 E2  ; CALL C1E2  (STEP)
+C0A2 67 01     ; CPIA 01
+C0A4 7E C0 BE  ; JPZ C0BE  (LOST)
+C0A7 9C        ; LP 1C
+C0A8 59        ; LDM
+C0A9 67 00     ; CPIA 00
+C0AB 7E C0 E3  ; JPZ C0E3  (CLEAR)
+C0AE 2D 15     ; JRM PL_STEP
+C0B0 78 C3 17  ; CALL C317  (DRAW)  PL_DRAW:
+C0B3 78 C4 17  ; CALL C417  (DELAY)
+C0B6 6B 08     ; TEST 08
+C0B8 7C C1 1A  ; JPNZ C11A  (QUIT)
+C0BB 79 C0 71  ; JP C071  (PLAY)
+; ---- 玉を落とした、押し切られた、面をクリアした ----
+C0BE 02 1E     ; LIA 1E             LOST:
+C0C0 03 32     ; LIB 32
+C0C2 78 C4 2D  ; CALL C42D  (TONE)
+C0C5 2C 0C     ; JRP MISS
+C0C7 02 28     ; LIA 28             CRUSH:
+C0C9 03 3C     ; LIB 3C
+C0CB 78 C4 2D  ; CALL C42D  (TONE)
+C0CE 02 32     ; LIA 32  (WALL0)    壁を元の位置に戻す
+C0D0 96        ; LP 16
+C0D1 DB        ; EXAM
+C0D2 02 FF     ; LIA FF             MISS: 玉を消して少し止める
+C0D4 90        ; LP 10
+C0D5 DB        ; EXAM
+C0D6 02 0E     ; LIA 0E
+C0D8 78 C4 1F  ; CALL C41F  (PAUSE)
+C0DB 98        ; LP 18
+C0DC 71 01     ; SBIM 01
+C0DE 38 3B     ; JRZP QUIT
+C0E0 79 C0 54  ; JP C054  (SERVE)
+C0E3 02 05     ; LIA 05             CLEAR: 500点
+C0E5 A8        ; LP 28
+C0E6 78 C2 A1  ; CALL C2A1  (ADDDIG)
+C0E9 99        ; LP 19
+C0EA 59        ; LDM
+C0EB 67 08     ; CPIA 08
+C0ED 2A 0B     ; JRNCP CL_LV
+C0EF 70 01     ; ADIM 01
+C0F1 9A        ; LP 1A              面ごとに速くする(最大で1フレーム3歩)
+C0F2 59        ; LDM
+C0F3 67 0C     ; CPIA 0C
+C0F5 2A 03     ; JRNCP CL_LV
+C0F7 70 01     ; ADIM 01
+C0F9 02 FF     ; LIA FF             CL_LV:
+C0FB 90        ; LP 10
+C0FC DB        ; EXAM
+C0FD 02 05     ; LIA 05
+C0FF 03 28     ; LIB 28
+C101 78 C4 2D  ; CALL C42D  (TONE)
+C104 02 03     ; LIA 03
+C106 03 3C     ; LIB 3C
+C108 78 C4 2D  ; CALL C42D  (TONE)
+C10B 02 02     ; LIA 02
+C10D 03 5A     ; LIB 5A
+C10F 78 C4 2D  ; CALL C42D  (TONE)
+C112 02 0C     ; LIA 0C
+C114 78 C4 1F  ; CALL C41F  (PAUSE)
+C117 79 C0 43  ; JP C043  (NEWWALL)
+C11A 90        ; LP 10              QUIT: 内部RAMをBASICの値に戻す(変数はSAVEに残る)
+C11B 00 1F     ; LII 1F
+C11D 10 C5 E0  ; LIDP C5E0  (SAVE)
+C120 19        ; EXWD
+C121 23        ; CLRA
+C122 12 5C     ; LIP 5C  (KEYPA)
+C124 DB        ; EXAM
+C125 5D        ; OUTA
+C126 23        ; CLRA
+C127 12 5D     ; LIP 5D  (KEYPB)
+C129 DB        ; EXAM
+C12A DD        ; OUTB
+C12B 37        ; RTN
+; ---- キーを読んでパドルを動かす。2フレームに1段 ----
+C12C 02 01     ; LIA 01             KEYS: ↑はIAのビット0で選び、読むとビット4
+C12E 12 5C     ; LIP 5C  (KEYPA)
+C130 DB        ; EXAM
+C131 5D        ; OUTA
+C132 4E 0A     ; WAIT 0A
+C134 4C        ; INA
+C135 64 10     ; ANIA 10
+C137 9F        ; LP 1F
+C138 DB        ; EXAM
+C139 23        ; CLRA
+C13A 12 5C     ; LIP 5C  (KEYPA)
+C13C DB        ; EXAM
+C13D 5D        ; OUTA
+C13E 02 01     ; LIA 01             ↓はIBのビット0で選び、読むとビット4
+C140 12 5D     ; LIP 5D  (KEYPB)
+C142 DB        ; EXAM
+C143 DD        ; OUTB
+C144 4E 0A     ; WAIT 0A
+C146 4C        ; INA
+C147 64 10     ; ANIA 10
+C149 AC        ; LP 2C
+C14A DB        ; EXAM
+C14B 23        ; CLRA
+C14C 12 5D     ; LIP 5D  (KEYPB)
+C14E DB        ; EXAM
+C14F DD        ; OUTB
+C150 23        ; CLRA
+C151 9D        ; LP 1D
+C152 DB        ; EXAM
+C153 9F        ; LP 1F
+C154 59        ; LDM
+C155 67 00     ; CPIA 00
+C157 38 14     ; JRZP K_DOWN
+C159 02 FF     ; LIA FF
+C15B 9D        ; LP 1D
+C15C DB        ; EXAM
+C15D 9E        ; LP 1E
+C15E 59        ; LDM
+C15F 64 01     ; ANIA 01
+C161 28 2D     ; JRNZP K_END
+C163 94        ; LP 14
+C164 59        ; LDM
+C165 67 00     ; CPIA 00
+C167 38 27     ; JRZP K_END
+C169 71 01     ; SBIM 01
+C16B 37        ; RTN
+C16C AC        ; LP 2C              K_DOWN:
+C16D 59        ; LDM
+C16E 67 00     ; CPIA 00
+C170 38 1E     ; JRZP K_END
+C172 02 01     ; LIA 01
+C174 9D        ; LP 1D
+C175 DB        ; EXAM
+C176 9E        ; LP 1E
+C177 59        ; LDM
+C178 64 01     ; ANIA 01
+C17A 28 14     ; JRNZP K_END
+C17C 02 07     ; LIA 07             下の限り = 7-PADH
+C17E 9F        ; LP 1F
+C17F DB        ; EXAM
+C180 95        ; LP 15
+C181 59        ; LDM
+C182 9F        ; LP 1F
+C183 45        ; SBM
+C184 94        ; LP 14
+C185 59        ; LDM
+C186 9F        ; LP 1F
+C187 C7        ; CPMA               (TMP)-PAD。0以下なら動かさない
+C188 38 06     ; JRZP K_END
+C18A 3A 04     ; JRCP K_END
+C18C 94        ; LP 14
+C18D 70 01     ; ADIM 01
+C18F 37        ; RTN                K_END:
+; ---- SPACEかENTERが押されていればZでない ----
+C190 02 30     ; LIA 30             FIRE: SPACEはIAのビット4、ENTERはビット5。読むとビット7
+C192 12 5C     ; LIP 5C  (KEYPA)
+C194 DB        ; EXAM
+C195 5D        ; OUTA
+C196 4E 0A     ; WAIT 0A
+C198 4C        ; INA
+C199 34        ; PUSH
+C19A 23        ; CLRA
+C19B 12 5C     ; LIP 5C  (KEYPA)
+C19D DB        ; EXAM
+C19E 5D        ; OUTA
+C19F 5B        ; POP
+C1A0 64 80     ; ANIA 80
+C1A2 37        ; RTN
+; ---- 玉をパドルの右に置く ----
+C1A3 02 03     ; LIA 03             SETBALL:
+C1A5 90        ; LP 10
+C1A6 DB        ; EXAM
+C1A7 02 01     ; LIA 01
+C1A9 92        ; LP 12
+C1AA DB        ; EXAM
+C1AB 02 06     ; LIA 06
+C1AD 93        ; LP 13
+C1AE DB        ; EXAM
+C1AF 94        ; LP 14              y = PAD*32+48(2段のまんなか)。3段なら+16で真ん中の段
+C1B0 59        ; LDM
+C1B1 58        ; SWP
+C1B2 D1        ; RC
+C1B3 5A        ; SL
+C1B4 74 30     ; ADIA 30
+C1B6 91        ; LP 11
+C1B7 DB        ; EXAM
+C1B8 95        ; LP 15
+C1B9 59        ; LDM
+C1BA 67 03     ; CPIA 03
+C1BC 28 04     ; JRNZP SB_END
+C1BE 91        ; LP 11
+C1BF 70 10     ; ADIM 10
+C1C1 37        ; RTN                SB_END:
+; ---- 壁の先端の列をAに返す ----
+C1C2 03 00     ; LIB 00             FRONT: B = 5×本目
+C1C4 12 20     ; LIP 20  (BRICK)
+C1C6 59        ; LDM                F_LOOP:
+C1C7 67 00     ; CPIA 00
+C1C9 28 0F     ; JRNZP F_FOUND
+C1CB 50        ; INCP
+C1CC DA        ; EXAB
+C1CD 74 05     ; ADIA 05
+C1CF DA        ; EXAB
+C1D0 DA        ; EXAB
+C1D1 67 1E     ; CPIA 1E
+C1D3 DA        ; EXAB
+C1D4 29 0F     ; JRNZM F_LOOP
+C1D6 02 FF     ; LIA FF
+C1D8 37        ; RTN
+C1D9 DA        ; EXAB               F_FOUND:
+C1DA 9F        ; LP 1F
+C1DB DB        ; EXAM
+C1DC 96        ; LP 16
+C1DD 59        ; LDM
+C1DE 9F        ; LP 1F
+C1DF 44        ; ADM
+C1E0 59        ; LDM
+C1E1 37        ; RTN
+; ---- 玉を1歩進める。落としたらA=1 ----
+C1E2 92        ; LP 12              STEP: 横
+C1E3 59        ; LDM
+C1E4 90        ; LP 10
+C1E5 44        ; ADM
+C1E6 59        ; LDM
+C1E7 67 5A     ; CPIA 5A
+C1E9 28 11     ; JRNZP S_NR
+C1EB 02 58     ; LIA 58             右端で跳ね返る
+C1ED DB        ; EXAM
+C1EE 02 FF     ; LIA FF
+C1F0 92        ; LP 12
+C1F1 DB        ; EXAM
+C1F2 02 06     ; LIA 06
+C1F4 03 08     ; LIB 08
+C1F6 78 C4 2D  ; CALL C42D  (TONE)
+C1F9 2C 26     ; JRP S_Y
+C1FB 67 FF     ; CPIA FF            S_NR:
+C1FD 28 04     ; JRNZP S_NL
+C1FF 02 01     ; LIA 01             左へ抜けた
+C201 37        ; RTN
+C202 67 02     ; CPIA 02            S_NL: パドルの列の右隣で、左へ向かっているとき
+C204 28 0C     ; JRNZP S_BX
+C206 92        ; LP 12
+C207 59        ; LDM
+C208 67 FF     ; CPIA FF
+C20A 28 06     ; JRNZP S_BX
+C20C 78 C2 B7  ; CALL C2B7  (PADHIT)
+C20F 2C 10     ; JRP S_Y
+C211 78 C2 52  ; CALL C252  (BRICKAT) S_BX:
+C214 67 01     ; CPIA 01
+C216 28 09     ; JRNZP S_Y
+C218 92        ; LP 12              横から当たった: 1列戻して向きを変える
+C219 59        ; LDM
+C21A 90        ; LP 10
+C21B 45        ; SBM
+C21C 92        ; LP 12
+C21D 59        ; LDM
+C21E 45        ; SBM
+C21F 45        ; SBM
+C220 93        ; LP 13              S_Y: 縦
+C221 59        ; LDM
+C222 91        ; LP 11
+C223 44        ; ADM
+C224 59        ; LDM
+C225 67 20     ; CPIA 20
+C227 2A 09     ; JRNCP S_Y1
+C229 02 40     ; LIA 40             上の縁: y = 64-y
+C22B 45        ; SBM
+C22C 59        ; LDM
+C22D 45        ; SBM
+C22E 45        ; SBM
+C22F 2C 0B     ; JRP S_YF
+C231 67 E1     ; CPIA E1            S_Y1:
+C233 3A 0D     ; JRCP S_YB
+C235 02 C0     ; LIA C0             下の縁: y = 448-y
+C237 45        ; SBM
+C238 59        ; LDM
+C239 45        ; SBM
+C23A 45        ; SBM
+C23B 93        ; LP 13              S_YF:
+C23C 59        ; LDM
+C23D 45        ; SBM
+C23E 45        ; SBM
+C23F 2C 10     ; JRP S_END
+C241 78 C2 52  ; CALL C252  (BRICKAT) S_YB:
+C244 67 01     ; CPIA 01
+C246 28 09     ; JRNZP S_END
+C248 93        ; LP 13              縦から当たった: 戻して向きを変える
+C249 59        ; LDM
+C24A 91        ; LP 11
+C24B 45        ; SBM
+C24C 93        ; LP 13
+C24D 59        ; LDM
+C24E 45        ; SBM
+C24F 45        ; SBM
+C250 23        ; CLRA               S_END:
+C251 37        ; RTN
+; ---- 玉の場所にブロックがあれば壊してA=1 ----
+C252 90        ; LP 10              BRICKAT: t = x-壁の左端。5ずつ引いて何本目かを出す(目地の列も当たり)
+C253 59        ; LDM
+C254 AC        ; LP 2C
+C255 DB        ; EXAM
+C256 96        ; LP 16
+C257 59        ; LDM
+C258 AC        ; LP 2C
+C259 45        ; SBM
+C25A 3A 44     ; JRCP BA_NO
+C25C 02 20     ; LIA 20  (BRICK)
+C25E DB        ; EXAM               BA_DIV: (TMP2)=本目のレジスタ番地、A=残り
+C25F 67 05     ; CPIA 05
+C261 3A 0B     ; JRCP BA_COL
+C263 75 05     ; SBIA 05
+C265 DB        ; EXAM
+C266 42        ; INCA
+C267 67 26     ; CPIA 26  (BRICK+6)
+C269 29 0C     ; JRNZM BA_DIV
+C26B 2C 33     ; JRP BA_NO
+C26D DB        ; EXAM               BA_COL: (TMP2)=残り、A=本目のレジスタ番地
+C26E AC        ; LP 2C
+C26F DB        ; EXAM
+C270 91        ; LP 11              段 = (y-16)/32
+C271 59        ; LDM
+C272 75 10     ; SBIA 10
+C274 58        ; SWP
+C275 64 0F     ; ANIA 0F
+C277 D1        ; RC
+C278 D2        ; SR
+C279 74 4E     ; ADIA 4E  (lo(MASK-1))
+C27B 84        ; LP 04
+C27C DB        ; EXAM
+C27D 02 C4     ; LIA C4  (hi(MASK))
+C27F 85        ; LP 05
+C280 DB        ; EXAM
+C281 24        ; IXL
+C282 DA        ; EXAB               B = その段のビット
+C283 AC        ; LP 2C
+C284 59        ; LDM
+C285 30        ; STP
+C286 DA        ; EXAB
+C287 C6        ; TSMA
+C288 38 16     ; JRZP BA_NO
+C28A 45        ; SBM                ビットを消す
+C28B 9C        ; LP 1C
+C28C 71 01     ; SBIM 01
+C28E 99        ; LP 19              10×(面+1)点
+C28F 59        ; LDM
+C290 42        ; INCA
+C291 A9        ; LP 29
+C292 78 C2 A1  ; CALL C2A1  (ADDDIG)
+C295 02 02     ; LIA 02
+C297 03 0C     ; LIB 0C
+C299 78 C4 2D  ; CALL C42D  (TONE)
+C29C 02 01     ; LIA 01
+C29E 37        ; RTN
+C29F 23        ; CLRA               BA_NO:
+C2A0 37        ; RTN
+; ---- (P)の桁にAを足して繰り上げる ----
+C2A1 44        ; ADM                ADDDIG:
+C2A2 59        ; LDM                AD_LOOP:
+C2A3 67 0A     ; CPIA 0A
+C2A5 3A 10     ; JRCP AD_END
+C2A7 20        ; LDP
+C2A8 67 26     ; CPIA 26  (SC)
+C2AA 38 08     ; JRZP AD_MAX
+C2AC 71 0A     ; SBIM 0A
+C2AE 51        ; DECP
+C2AF 70 01     ; ADIM 01
+C2B1 2D 10     ; JRM AD_LOOP
+C2B3 02 09     ; LIA 09             AD_MAX: 99999で止める
+C2B5 DB        ; EXAM
+C2B6 37        ; RTN                AD_END:
+; ---- パドルに当たったか調べて、当たれば跳ね返す ----
+C2B7 91        ; LP 11              PADHIT: d = (y-16)/8 + 1 - 4×PAD。0〜9なら当たり
+C2B8 59        ; LDM
+C2B9 75 10     ; SBIA 10
+C2BB D1        ; RC
+C2BC D2        ; SR
+C2BD D1        ; RC
+C2BE D2        ; SR
+C2BF D1        ; RC
+C2C0 D2        ; SR
+C2C1 42        ; INCA
+C2C2 9F        ; LP 1F
+C2C3 DB        ; EXAM
+C2C4 94        ; LP 14
+C2C5 59        ; LDM
+C2C6 D1        ; RC
+C2C7 5A        ; SL
+C2C8 D1        ; RC
+C2C9 5A        ; SL
+C2CA 9F        ; LP 1F
+C2CB 45        ; SBM
+C2CC 95        ; LP 15              2段なら0〜9、3段なら0〜13が当たり
+C2CD 59        ; LDM
+C2CE 67 03     ; CPIA 03
+C2D0 9F        ; LP 1F
+C2D1 59        ; LDM
+C2D2 38 09     ; JRZP PH_3
+C2D4 67 0A     ; CPIA 0A
+C2D6 2A 3F     ; JRNCP PH_MISS
+C2D8 74 60     ; ADIA 60  (lo(VYTAB-1)) 当てた場所で角度を決め、パドルの向きを足す
+C2DA 2C 07     ; JRP PH_TAB
+C2DC 67 0E     ; CPIA 0E            PH_3:
+C2DE 2A 37     ; JRNCP PH_MISS
+C2E0 74 6A     ; ADIA 6A  (lo(VYTAB3-1))
+C2E2 84        ; LP 04              PH_TAB:
+C2E3 DB        ; EXAM
+C2E4 02 C4     ; LIA C4  (hi(VYTAB))
+C2E6 85        ; LP 05
+C2E7 DB        ; EXAM
+C2E8 24        ; IXL
+C2E9 9F        ; LP 1F
+C2EA DB        ; EXAM
+C2EB 9D        ; LP 1D
+C2EC 59        ; LDM
+C2ED 9F        ; LP 1F
+C2EE 44        ; ADM
+C2EF 59        ; LDM
+C2F0 74 0A     ; ADIA 0A
+C2F2 74 78     ; ADIA 78  (lo(CLAMP-1))
+C2F4 84        ; LP 04
+C2F5 DB        ; EXAM
+C2F6 02 C4     ; LIA C4  (hi(CLAMP))
+C2F8 85        ; LP 05
+C2F9 DB        ; EXAM
+C2FA 24        ; IXL
+C2FB 67 00     ; CPIA 00
+C2FD 28 0B     ; JRNZP PH_SET
+C2FF 91        ; LP 11              真横に近いときは、画面の上半分なら下へ、下半分なら上へ
+C300 59        ; LDM
+C301 67 70     ; CPIA 70
+C303 02 04     ; LIA 04
+C305 3A 03     ; JRCP PH_SET
+C307 02 FC     ; LIA FC  (-4)
+C309 93        ; LP 13              PH_SET:
+C30A DB        ; EXAM
+C30B 02 01     ; LIA 01
+C30D 92        ; LP 12
+C30E DB        ; EXAM
+C30F 02 04     ; LIA 04
+C311 03 10     ; LIB 10
+C313 78 C4 2D  ; CALL C42D  (TONE)
+C316 37        ; RTN                PH_MISS:
+; ---- 画面を描く ----
+C317 10 C5 01  ; LIDP C501  (BUF)   DRAW: 120列を消す
+C31A 23        ; CLRA
+C31B 00 77     ; LII 77
+C31D 1F        ; FILD
+C31E 96        ; LP 16              壁。1本4列を描き、5列目は目地
+C31F 59        ; LDM
+C320 74 00     ; ADIA 00  (lo(BUF-1))
+C322 86        ; LP 06
+C323 DB        ; EXAM
+C324 02 C5     ; LIA C5  (hi(BUF))
+C326 87        ; LP 07
+C327 DB        ; EXAM
+C328 12 20     ; LIP 20  (BRICK)
+C32A 59        ; LDM                D_COL:
+C32B 26        ; IYS
+C32C 26        ; IYS
+C32D 26        ; IYS
+C32E 26        ; IYS
+C32F 06        ; IY
+C330 50        ; INCP
+C331 20        ; LDP
+C332 67 26     ; CPIA 26  (BRICK+6)
+C334 29 0B     ; JRNZM D_COL
+C336 95        ; LP 15              パドル(0列と1列)。3段の絵は表の7番目から
+C337 59        ; LDM
+C338 67 03     ; CPIA 03
+C33A 94        ; LP 14
+C33B 59        ; LDM
+C33C 28 03     ; JRNZP D_PAD2
+C33E 74 06     ; ADIA 06
+C340 74 55     ; ADIA 55  (lo(PADTAB-1)) D_PAD2:
+C342 84        ; LP 04
+C343 DB        ; EXAM
+C344 02 C4     ; LIA C4  (hi(PADTAB))
+C346 85        ; LP 05
+C347 DB        ; EXAM
+C348 24        ; IXL
+C349 10 C5 01  ; LIDP C501  (BUF)
+C34C 52        ; STD
+C34D 10 C5 02  ; LIDP C502  (BUF+1)
+C350 52        ; STD
+C351 10 C5 5A  ; LIDP C55A  (BUF+89) 右の縁(玉はここで跳ね返る)
+C354 02 7F     ; LIA 7F
+C356 52        ; STD
+C357 90        ; LP 10              玉
+C358 59        ; LDM
+C359 67 5A     ; CPIA 5A
+C35B 2A 25     ; JRNCP D_STAT
+C35D 91        ; LP 11              先に段のビットをTMPへ
+C35E 59        ; LDM
+C35F 75 10     ; SBIA 10
+C361 58        ; SWP
+C362 64 0F     ; ANIA 0F
+C364 D1        ; RC
+C365 D2        ; SR
+C366 74 4E     ; ADIA 4E  (lo(MASK-1))
+C368 84        ; LP 04
+C369 DB        ; EXAM
+C36A 02 C4     ; LIA C4  (hi(MASK))
+C36C 85        ; LP 05
+C36D DB        ; EXAM
+C36E 24        ; IXL
+C36F 9F        ; LP 1F
+C370 DB        ; EXAM
+C371 90        ; LP 10              DP = BUF+x
+C372 59        ; LDM
+C373 74 00     ; ADIA 00  (lo(BUF-1))
+C375 86        ; LP 06
+C376 DB        ; EXAM
+C377 02 C5     ; LIA C5  (hi(BUF))
+C379 87        ; LP 07
+C37A DB        ; EXAM
+C37B 06        ; IY
+C37C 57        ; LDD                (DP)にTMPのビットを重ねる
+C37D 9F        ; LP 1F
+C37E 47        ; ORMA
+C37F 59        ; LDM
+C380 52        ; STD
+C381 02 5A     ; LIA 5A  (lo(BUF-1+90)) D_STAT: 残りの玉(90、92、94列。液晶の19桁目)
+C383 86        ; LP 06
+C384 DB        ; EXAM
+C385 02 C5     ; LIA C5  (hi(BUF))
+C387 87        ; LP 07
+C388 DB        ; EXAM
+C389 98        ; LP 18
+C38A 59        ; LDM
+C38B 83        ; LP 03
+C38C DB        ; EXAM
+C38D 83        ; LP 03
+C38E 59        ; LDM
+C38F 67 00     ; CPIA 00
+C391 38 08     ; JRZP D_SC
+C393 02 1C     ; LIA 1C             D_LIFE:
+C395 26        ; IYS
+C396 06        ; IY
+C397 C3        ; DECB
+C398 29 06     ; JRNZM D_LIFE
+C39A 02 60     ; LIA 60  (lo(BUF-1+96)) D_SC: 得点(20〜24桁目。数字は3列なので各桁の2〜4列目に)
+C39C 86        ; LP 06
+C39D DB        ; EXAM
+C39E 02 C5     ; LIA C5  (hi(BUF))
+C3A0 87        ; LP 07
+C3A1 DB        ; EXAM
+C3A2 02 26     ; LIA 26  (SC)
+C3A4 88        ; LP 08
+C3A5 DB        ; EXAM
+C3A6 88        ; LP 08              D_DIG:
+C3A7 59        ; LDM
+C3A8 30        ; STP
+C3A9 59        ; LDM                桁の数×3がフォントの位置
+C3AA 8B        ; LP 0B
+C3AB DB        ; EXAM
+C3AC 59        ; LDM
+C3AD D1        ; RC
+C3AE 5A        ; SL
+C3AF 44        ; ADM
+C3B0 59        ; LDM
+C3B1 74 8C     ; ADIA 8C  (lo(FONT-1))
+C3B3 84        ; LP 04
+C3B4 DB        ; EXAM
+C3B5 02 C4     ; LIA C4  (hi(FONT))
+C3B7 85        ; LP 05
+C3B8 DB        ; EXAM
+C3B9 24        ; IXL
+C3BA 26        ; IYS
+C3BB 24        ; IXL
+C3BC 26        ; IYS
+C3BD 24        ; IXL
+C3BE 26        ; IYS
+C3BF 06        ; IY
+C3C0 06        ; IY
+C3C1 88        ; LP 08
+C3C2 70 01     ; ADIM 01
+C3C4 59        ; LDM
+C3C5 67 2B     ; CPIA 2B  (SC+5)
+C3C7 29 22     ; JRNZM D_DIG
+C3C9 02 00     ; LIA 00  (lo(BUF-1)) 液晶RAMへ写す。左の60列は番地の順、右の60列は逆順
+C3CB 84        ; LP 04
+C3CC DB        ; EXAM
+C3CD 02 C5     ; LIA C5  (hi(BUF))
+C3CF 85        ; LP 05
+C3D0 DB        ; EXAM
+C3D1 02 FF     ; LIA FF
+C3D3 86        ; LP 06
+C3D4 DB        ; EXAM
+C3D5 02 F7     ; LIA F7
+C3D7 87        ; LP 07
+C3D8 DB        ; EXAM
+C3D9 03 06     ; LIB 06             10列ずつ6回
+C3DB 24        ; IXL                D_L60:
+C3DC 26        ; IYS
+C3DD 24        ; IXL
+C3DE 26        ; IYS
+C3DF 24        ; IXL
+C3E0 26        ; IYS
+C3E1 24        ; IXL
+C3E2 26        ; IYS
+C3E3 24        ; IXL
+C3E4 26        ; IYS
+C3E5 24        ; IXL
+C3E6 26        ; IYS
+C3E7 24        ; IXL
+C3E8 26        ; IYS
+C3E9 24        ; IXL
+C3EA 26        ; IYS
+C3EB 24        ; IXL
+C3EC 26        ; IYS
+C3ED 24        ; IXL
+C3EE 26        ; IYS
+C3EF C3        ; DECB
+C3F0 29 16     ; JRNZM D_L60
+C3F2 02 7C     ; LIA 7C
+C3F4 86        ; LP 06
+C3F5 DB        ; EXAM
+C3F6 02 F8     ; LIA F8
+C3F8 87        ; LP 07
+C3F9 DB        ; EXAM
+C3FA 03 06     ; LIB 06
+C3FC 24        ; IXL                D_R60:
+C3FD 27        ; DYS
+C3FE 24        ; IXL
+C3FF 27        ; DYS
+C400 24        ; IXL
+C401 27        ; DYS
+C402 24        ; IXL
+C403 27        ; DYS
+C404 24        ; IXL
+C405 27        ; DYS
+C406 24        ; IXL
+C407 27        ; DYS
+C408 24        ; IXL
+C409 27        ; DYS
+C40A 24        ; IXL
+C40B 27        ; DYS
+C40C 24        ; IXL
+C40D 27        ; DYS
+C40E 24        ; IXL
+C40F 27        ; DYS
+C410 C3        ; DECB
+C411 29 16     ; JRNZM D_R60
+C413 9E        ; LP 1E
+C414 70 01     ; ADIM 01
+C416 37        ; RTN
+; ---- 1フレームの残りを待つ ----
+C417 03 0C     ; LIB 0C             DELAY:
+C419 4E FF     ; WAIT FF            DL_LOOP:
+C41B C3        ; DECB
+C41C 29 04     ; JRNZM DL_LOOP
+C41E 37        ; RTN
+; ---- Aフレームのあいだ止めておく(玉は動かさない) ----
+C41F AF        ; LP 2F              PAUSE:
+C420 DB        ; EXAM
+C421 78 C3 17  ; CALL C317  (DRAW)  PA_LOOP:
+C424 78 C4 17  ; CALL C417  (DELAY)
+C427 AF        ; LP 2F
+C428 71 01     ; SBIM 01
+C42A 29 0A     ; JRNZM PA_LOOP
+C42C 37        ; RTN
+; ---- 音。Aが半周期の長さ、Bが半周期の数 ----
+C42D AE        ; LP 2E              TONE:
+C42E DB        ; EXAM
+C42F 02 51     ; LIA 51             T_LOOP: Cポートのビット4〜6が5で出力が高、4で低(ビット0は表示)
+C431 12 5F     ; LIP 5F  (PORTC)
+C433 DB        ; EXAM
+C434 DF        ; OUTC
+C435 AE        ; LP 2E
+C436 59        ; LDM
+C437 43        ; DECA               T_W1:
+C438 29 02     ; JRNZM T_W1
+C43A 02 41     ; LIA 41
+C43C 12 5F     ; LIP 5F  (PORTC)
+C43E DB        ; EXAM
+C43F DF        ; OUTC
+C440 AE        ; LP 2E
+C441 59        ; LDM
+C442 43        ; DECA               T_W2:
+C443 29 02     ; JRNZM T_W2
+C445 C3        ; DECB
+C446 29 18     ; JRNZM T_LOOP
+C448 02 01     ; LIA 01
+C44A 12 5F     ; LIP 5F  (PORTC)
+C44C DB        ; EXAM
+C44D DF        ; OUTC
+C44E 37        ; RTN
+; ---- 表 ----
+C44F 01 02 04 08 10 20 40  ; MASK: 段のビット
+C456 03 06 0C 18 30 60 07 0E 1C 38 70  ; PADTAB: パドルの絵(2段、3段)
+C461 F8 F9 FA FB FC 04 05 06 07 08  ; VYTAB: 当てた場所ごとの角度(1列で1/32段単位)
+C46B F8 F8 F9 FA FB FC FC 04 04 05 06 07  ; VYTAB3: 3段のパドル
+C477 08 08
+C479 F8 F8 F8 F9 FA FB FC 00 00 00 00 00  ; CLAMP: 角度を±4〜8に収める(0は別扱い)
+C485 00 00 04 05 06 07 08 08
+C48D 3E 22 3E 24 3E 20 3A 2A 2E 2A 2A 3E  ; FONT: 数字0〜4(縦5段、ビット1〜5)
+C499 0E 08 3E
+C49C 2E 2A 3A 3E 2A 3A 02 32 0E 3E 2A 3E  ; 数字5〜9
+C4A8 2E 2A 3E

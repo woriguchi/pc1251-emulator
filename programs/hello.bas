@@ -1,0 +1,7 @@
+# title: HELLO(はじめの一歩)
+# run: RUN
+5 WAIT 64
+10 FOR I=1 TO 3
+20 PRINT "HELLO PC-1251 ";I
+30 NEXT I
+40 END

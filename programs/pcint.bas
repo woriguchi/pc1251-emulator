@@ -1,0 +1,7 @@
+# title: PC-インタープリタ(見本)
+# run: CALL &C300
+# PC-インタープリタの文法で書いたBASICの行。CALL &C300で実行する。
+# 数はすべて16進法2桁。FOR nは本体をn+1回まわす。
+10 COS:PRINT "PC-INTERPRETER":WAIT 80
+20 FOR 05:SQR:BEEP 03,10:WAIT 20:NEXT
+30 COS:CALL 02:PRINT "PRESS ENTER":SQR:STOP:END

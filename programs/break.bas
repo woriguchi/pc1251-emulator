@@ -1,0 +1,16 @@
+# title: ブロック崩し(マシン語)
+# 同じ名前のbreak.hexを先に書き込み、CALL &C000で遊ぶ。↑↓でパドル、SPACEで打ち出す
+# 1(easy)はパドル3段で遅め、2(normal)はパドル2段。C5DF番地に書いてから呼ぶ
+# 得点はマシン語が終わったあとC5F6〜C5FA番地に1桁ずつ残っている
+10 D=2:G=0:H=0
+20 INPUT "1:EASY 2:NORMAL ? ";D
+30 POKE &C5DF,0:IF D=1 POKE &C5DF,1
+40 WAIT 64:PRINT "SIDE BREAK"
+50 CALL &C000
+60 S=PEEK &C5F6*10000+PEEK &C5F7*1000+PEEK &C5F8*100+PEEK &C5F9*10
+70 IF D=1 IF S>G LET G=S
+80 IF D<>1 IF S>H LET H=S
+90 T=H:IF D=1 LET T=G
+100 WAIT 128:PRINT "GAME OVER"
+110 WAIT :PRINT "SCORE ";S;" HI ";T
+120 GOTO 20
