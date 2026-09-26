@@ -125,6 +125,13 @@ class Typer:
 
     MODE_WAIT = CLOCK * 300 // 1000  # スイッチを動かしたあとROMが気づくまで待つ
 
+    LIVE = "@LIVE"  # パソコンのキーボードで押されたキーの印
+    # パソコンのキーを届けるときに押しておく時間と、次のキーまであける時間。
+    # ROMは離したあと40ms ほどキーがない時間がないと次のキーを取りこぼすので、
+    # 1打鍵に0.1秒(毎秒10打鍵)かける。これより速く打った分は順番待ちになる。
+    LIVE_DOWN = CLOCK * 50 // 1000
+    LIVE_UP = CLOCK * 50 // 1000
+
     def __init__(self, machine: PC1251, on_mode=None):
         self.m = machine
         self.on_mode = on_mode  # "@MODE:PRO"のような印でスイッチを動かす
@@ -132,6 +139,34 @@ class Typer:
         self.cur: list[str] | None = None
         self.until = 0
         self.phase = 0
+        # パソコンのキーボードで押されているキーと、そのうちROMに1回は届けたもの。
+        # 速く打つとキーを押して離すまでが1フレームに収まったり、次のキーを先に
+        # 押したりするので、押されたキーは1つずつ順に一定の時間押して届ける。
+        # 届けたあとも押し続けていれば、離すまで押したままにする(ゲームやくり返し用)。
+        self.physical: set[str] = set()
+        self.delivered: set[str] = set()
+        self.live = False
+
+    def press_live(self, name: str) -> None:
+        """パソコンのキーが押された。順番待ちに入れる"""
+        if name not in self.physical:
+            self.physical.add(name)
+            self.queue.append([self.LIVE, name])
+
+    def release_live(self, name: str) -> None:
+        """パソコンのキーが離された"""
+        self.physical.discard(name)
+        if name in self.delivered:
+            self.delivered.discard(name)
+            if not (self.cur and name in self.cur and self.phase == 0):
+                self.m.held.discard(name)
+
+    @property
+    def scripted(self) -> bool:
+        """打ち込み(ファイルや貼り付け)の途中か。パソコンのキーの順番待ちは含めない"""
+        if self.cur is not None and not self.live:
+            return True
+        return any(e[:1] != [self.LIVE] for e in self.queue)
 
     def add_text(self, text: str) -> None:
         self.queue.extend(keys_for(text.replace("\r\n", "\n").replace("\r", "\n")))
@@ -153,6 +188,7 @@ class Typer:
                 return
             self.cur = self.queue.pop(0)
             if self.cur and self.cur[0].startswith("@MODE:"):
+                self.live = False
                 mode = self.cur[0][6:]
                 if self.on_mode:
                     self.on_mode(mode)
@@ -161,16 +197,30 @@ class Typer:
                 self.until = c + self.MODE_WAIT
                 self.phase = 1
                 return
+            if self.cur[:1] == [self.LIVE]:
+                self.cur = self.cur[1:]
+                self.m.held.difference_update(self.delivered)  # 押すのは1つずつ
+                self.live = True
+            else:
+                self.live = False
             self.m.held.update(self.cur)
-            self.until = c + self.DOWN
+            self.until = c + (self.LIVE_DOWN if self.live else self.DOWN)
             self.phase = 0
         elif c >= self.until:
             if self.phase == 0:
                 self.m.held.difference_update(self.cur)
-                self.until = c + (self.AFTER_ENTER if self.cur == ["ENTER"] else self.UP)
+                if self.live:
+                    self.delivered.update(k for k in self.cur if k in self.physical)
+                if self.cur == ["ENTER"]:
+                    self.until = c + self.AFTER_ENTER
+                else:
+                    self.until = c + (self.LIVE_UP if self.live else self.UP)
                 self.phase = 1
             else:
                 self.cur = None
+                if not self.queue:
+                    # 順番待ちがなくなったら、押し続けているキーを押したままに戻す
+                    self.m.held.update(self.delivered & self.physical)
 
 
 class App:
@@ -276,7 +326,7 @@ class App:
         if name is None and not mods & pygame.KMOD_SHIFT:
             name = DIGITS.get(ev.key)  # Shift付きの数字キーは記号になる
         if name:
-            m.held.add(name)
+            self.typer.press_live(name)
 
     def key_up(self, ev) -> None:
         m = self.m
@@ -286,7 +336,7 @@ class App:
             m.reset_key = False
         name = DIRECT.get(ev.key) or LETTERS.get(ev.key) or DIGITS.get(ev.key)
         if name:
-            m.held.discard(name)
+            self.typer.release_live(name)
 
     def text_input(self, text: str) -> None:
         if self.menu is not None or self.popup is not None:
@@ -579,7 +629,7 @@ class App:
 
     def export_program(self) -> None:
         """RAMにあるBASICのプログラムを、置き場所に.basのファイルとして書き出す"""
-        if self.typer.busy:
+        if self.typer.scripted:
             self.say("打ち込みが終わってから書き出してください")
             return
         prog = getattr(self, "last_prog", None)
@@ -750,7 +800,7 @@ class App:
             self.reset_frames -= 1
             if self.reset_frames == 0:
                 m.reset_key = False
-        speed = self.turbo * (8 if self.typer.busy and not self.boot_frames else 1)
+        speed = self.turbo * (8 if self.typer.scripted and not self.boot_frames else 1)
         c0 = m.cpu.cycles
         m.sound_events.clear()
         if self.fast and self.typer.busy and not self.boot_frames:

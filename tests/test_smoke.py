@@ -319,6 +319,29 @@ def test_export_basic_round_trip(tmp_path=None):
     app.close()
 
 
+def test_fast_typing_is_not_dropped():
+    """パソコンのキーを速く打っても(1フレームで押して離す、前のキーを離す前に次を押す)取りこぼさない"""
+    app = _app()
+    app.set_mode("PRO")
+    for _ in range(20):
+        app.frame()
+    ev = pygame.event.Event
+    text = "ABCDEFGHJKLMN"
+    for i, ch in enumerate(text):
+        k = getattr(pygame, "K_" + ch.lower())
+        app.handle(ev(pygame.KEYDOWN, key=k, mod=0, unicode="", scancode=0))
+        if i:  # 前のキーは、次のキーを押してから離す
+            prev = getattr(pygame, "K_" + text[i - 1].lower())
+            app.handle(ev(pygame.KEYUP, key=prev, mod=0, unicode="", scancode=0))
+        app.frame()
+    last = getattr(pygame, "K_" + text[-1].lower())
+    app.handle(ev(pygame.KEYUP, key=last, mod=0, unicode="", scancode=0))
+    for _ in range(60):
+        app.frame()
+    assert lcd_text(app.m).replace("?", " ").strip() == text, lcd_text(app.m)
+    app.close()
+
+
 if __name__ == "__main__":
     test_app_types_and_computes()
     test_switch_knob_matches_label()
@@ -329,4 +352,5 @@ if __name__ == "__main__":
     test_display_stays_on_while_computing()
     test_breakout_in_machine_code()
     test_export_basic_round_trip()
+    test_fast_typing_is_not_dropped()
     print("ok")
