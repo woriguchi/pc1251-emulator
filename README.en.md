@@ -6,7 +6,7 @@ An emulator for the Sharp PC-1251, a pocket computer from the early 1980s. It ex
 
 ![PC-1251](images/screen.png)
 
-![Typing in BASIC and running it, then running a machine-code sine wave from the right-click menu](images/demo.gif)
+![Loading the machine-code breakout game from the right-click menu and playing it](images/demo.gif)
 
 The user guide, starting from installation on macOS and Windows, is [`doc/manual.pdf`](doc/manual.pdf) (in Japanese).
 

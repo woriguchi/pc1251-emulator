@@ -6,7 +6,7 @@
 
 ![PC-1251](images/screen.png)
 
-![BASICを打ち込んで実行し、右クリックのメニューからマシン語の正弦波を動かすところ](images/demo.gif)
+![右クリックのメニューからマシン語のブロック崩しを読み込んで遊ぶところ](images/demo.gif)
 
 macOSとWindowsでの入れ方から順に書いた使い方の手引きが[`doc/manual.pdf`](doc/manual.pdf)にあります。
 
