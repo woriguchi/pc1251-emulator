@@ -281,6 +281,19 @@ def _play_breakout(level: str, height: int) -> None:
     app.close()
 
 
+def test_grid_disappears_when_power_is_off():
+    """消灯ドットの薄い格子は電源が入っているときだけ見え、OFFにすると消える"""
+    app = _app()
+    for _ in range(30):
+        app.frame()
+    assert app.m.power and app.panel.grid_level > 0.9
+    app.set_switch_from(dict(app.SW_STOPS)["OFF"])
+    for _ in range(60):
+        app.frame()
+    assert not app.m.power and app.panel.grid_level == 0.0
+    app.close()
+
+
 def test_export_basic_round_trip(tmp_path=None):
     """RAMのプログラムを.basに書き出し、打ち込み直すと同じ中間コードになる"""
     import tempfile
@@ -382,6 +395,7 @@ if __name__ == "__main__":
     test_mogura_on_pc_interpreter()
     test_display_stays_on_while_computing()
     test_breakout_in_machine_code()
+    test_grid_disappears_when_power_is_off()
     test_export_basic_round_trip()
     test_fast_typing_is_not_dropped()
     print("ok")

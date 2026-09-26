@@ -846,7 +846,9 @@ class App:
             self.buzzer.mode = m.pc_out >> 4
         mode = m.mode
         pressed = set(m.held) | ({"BRK"} if m.brk else set())
-        surf = self.panel.draw(m.columns(), m.symbols(), m.display_on(), mode, pressed)
+        surf = self.panel.draw(
+            m.columns(), m.symbols(), m.display_on(), mode, pressed, powered=m.power
+        )
         out = self.window
         if self.scale == 1.0:
             out.blit(surf, (0, 0))

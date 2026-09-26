@@ -5,7 +5,9 @@
 
 液晶は次の点を実機に似せた。
 
-* 点灯ドットは黒でなく濃い青紫。消灯しているドットも薄く見える。
+* 点灯ドットは黒でなく濃い青紫。
+* 消灯しているドットも薄く見える。マルチプレックス駆動では消灯側のドットにも
+  小さな電圧がかかるため。電源を切ると駆動が止まり、この薄い格子も消える。
 * 反射型の液晶なので、ドットの影が奥の反射板に落ち、右下へずれて見える。
 * 応答が遅い(点灯より消灯が遅い)ので、動くものは尾を引く。
 * Cポートのビット0で表示を切ると、液晶全体が消える(BASICの実行中など)。
@@ -86,6 +88,8 @@ class Panel:
             self.key_down[name] = _surface(kb_down.crop(box))
         self.shown_down: set[str] = set()
         self.glass = _surface(self._glass())
+        self.grid = self._grid()
+        self.grid_level = 0.0
         self.ann_bg = _surface(self.body.crop((MAT_X, ANN_Y, MAT_X + MAT_W, ANN_Y + ANN_H)))
         self.dots = [self._dot(k) for k in range(LEVELS)]
         self.shadows = [self._shadow(k) for k in range(LEVELS)]
@@ -163,15 +167,18 @@ class Panel:
 
     def _glass(self) -> Image.Image:
         box = (MAT_X - 4, MAT_Y - 4, MAT_X + MAT_W + 4, MAT_Y + MAT_H + 4)
-        im = self.body.crop(box).convert("RGBA")
-        ov = Image.new("RGBA", im.size, (0, 0, 0, 0))
+        return self.body.crop(box).convert("RGB")
+
+    def _grid(self) -> pygame.Surface:
+        """消灯ドットの薄い格子。電源が入っているあいだだけ重ねる"""
+        ov = Image.new("RGBA", (MAT_W + 8, MAT_H + 8), (0, 0, 0, 0))
         d = ImageDraw.Draw(ov)
         for y in range(H):
             for x in range(W):
                 px = 4 + phys_x(x) * PITCH
                 py = 4 + y * PITCH
                 d.rectangle([px, py, px + DOT - 1, py + DOT - 1], fill=DOT_INK + (OFF_ALPHA,))
-        return Image.alpha_composite(im, ov).convert("RGB")
+        return _surface(ov)
 
     def _dot(self, k: int) -> pygame.Surface:
         a = int(OFF_ALPHA + (ON_ALPHA - OFF_ALPHA) * k / (LEVELS - 1))
@@ -205,6 +212,7 @@ class Panel:
         on: bool,
         mode: str,
         pressed: set[str] | frozenset[str] = frozenset(),
+        powered: bool = True,
     ) -> pygame.Surface:
         dst = self.canvas
         dst.blit(self.switch[mode], self.sw_xy)
@@ -217,6 +225,12 @@ class Panel:
             self.shown_down = pressed
         dst.blit(self.glass, (MAT_X - 4, MAT_Y - 4))
         rise, fall = self.rise, self.fall
+        g = self.grid_level
+        g = g + (1.0 - g) * rise if powered else g - g * fall
+        self.grid_level = g = 0.0 if g < 0.01 else g
+        if g:
+            self.grid.set_alpha(int(255 * g + 0.5))
+            dst.blit(self.grid, (MAT_X - 4, MAT_Y - 4))
         top = LEVELS - 1
         level = self.level
         todo = []
