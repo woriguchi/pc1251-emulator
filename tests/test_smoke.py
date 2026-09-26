@@ -339,6 +339,14 @@ def test_fast_typing_is_not_dropped():
     for _ in range(60):
         app.frame()
     assert lcd_text(app.m).replace("?", " ").strip() == text, lcd_text(app.m)
+    # ゆっくり長く押しても(0.3秒)、1字だけ入る
+    app.handle(ev(pygame.KEYDOWN, key=pygame.K_z, mod=0, unicode="", scancode=0))
+    for _ in range(9):
+        app.frame()
+    app.handle(ev(pygame.KEYUP, key=pygame.K_z, mod=0, unicode="", scancode=0))
+    for _ in range(30):
+        app.frame()
+    assert lcd_text(app.m).replace("?", " ").strip() == text + "Z", lcd_text(app.m)
     app.close()
 
 

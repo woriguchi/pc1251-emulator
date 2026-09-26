@@ -139,12 +139,11 @@ class Typer:
         self.cur: list[str] | None = None
         self.until = 0
         self.phase = 0
-        # パソコンのキーボードで押されているキーと、そのうちROMに1回は届けたもの。
-        # 速く打つとキーを押して離すまでが1フレームに収まったり、次のキーを先に
-        # 押したりするので、押されたキーは1つずつ順に一定の時間押して届ける。
-        # 届けたあとも押し続けていれば、離すまで押したままにする(ゲームやくり返し用)。
+        # パソコンのキーボードで押されているキー。速く打つと、押して離すまでが
+        # 1フレームに収まったり、前のキーを離す前に次を押したりするので、押された
+        # キーは順番待ちに入れ、1つずつ一定の時間押して届ける。押し続けていれば、
+        # 離すまで(か次のキーが来るまで)そのまま押しておく。
         self.physical: set[str] = set()
-        self.delivered: set[str] = set()
         self.live = False
 
     def press_live(self, name: str) -> None:
@@ -154,12 +153,8 @@ class Typer:
             self.queue.append([self.LIVE, name])
 
     def release_live(self, name: str) -> None:
-        """パソコンのキーが離された"""
+        """パソコンのキーが離された(押したままの段階なら、次のstepで離す)"""
         self.physical.discard(name)
-        if name in self.delivered:
-            self.delivered.discard(name)
-            if not (self.cur and name in self.cur and self.phase == 0):
-                self.m.held.discard(name)
 
     @property
     def scripted(self) -> bool:
@@ -199,28 +194,33 @@ class Typer:
                 return
             if self.cur[:1] == [self.LIVE]:
                 self.cur = self.cur[1:]
-                self.m.held.difference_update(self.delivered)  # 押すのは1つずつ
                 self.live = True
             else:
                 self.live = False
             self.m.held.update(self.cur)
             self.until = c + (self.LIVE_DOWN if self.live else self.DOWN)
             self.phase = 0
+        elif self.phase == 2:
+            # 押したままの段階: 離されたか、次のキーが来たら離す
+            if not set(self.cur) <= self.physical or self.queue:
+                self._release(c)
         elif c >= self.until:
             if self.phase == 0:
-                self.m.held.difference_update(self.cur)
-                if self.live:
-                    self.delivered.update(k for k in self.cur if k in self.physical)
-                if self.cur == ["ENTER"]:
-                    self.until = c + self.AFTER_ENTER
+                if self.live and set(self.cur) <= self.physical and not self.queue:
+                    self.phase = 2  # まだ押されている。離すまで押したままにする
                 else:
-                    self.until = c + (self.LIVE_UP if self.live else self.UP)
-                self.phase = 1
+                    self._release(c)
             else:
                 self.cur = None
-                if not self.queue:
-                    # 順番待ちがなくなったら、押し続けているキーを押したままに戻す
-                    self.m.held.update(self.delivered & self.physical)
+
+    def _release(self, c: int) -> None:
+        assert self.cur is not None
+        self.m.held.difference_update(self.cur)
+        if self.cur == ["ENTER"]:
+            self.until = c + self.AFTER_ENTER
+        else:
+            self.until = c + (self.LIVE_UP if self.live else self.UP)
+        self.phase = 1
 
 
 class App:
