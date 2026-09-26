@@ -25,7 +25,7 @@ def test_app_types_and_computes():
     assert lcd_text(app.m).strip().startswith("36")
     for ch in "(+)":  # 記号はTEXTINPUTから入り、SHIFT付きの打鍵に直る
         app.handle(pygame.event.Event(pygame.TEXTINPUT, text=ch))
-    assert app.typer.queue[0] == ["SHIFT"]
+    assert app.typer.queue[0] == [app.typer.LIVE, "SHIFT"]
     for _ in range(30):
         app.frame()
     assert not app.typer.busy

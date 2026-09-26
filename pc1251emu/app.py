@@ -152,6 +152,10 @@ class Typer:
             self.physical.add(name)
             self.queue.append([self.LIVE, name])
 
+    def add_live_keys(self, keys: list[list[str]]) -> None:
+        """パソコンで打った記号やBackspaceを、ふつうの速さで順に押す(押すのが見える)"""
+        self.queue.extend([self.LIVE, *k] for k in keys)
+
     def release_live(self, name: str) -> None:
         """パソコンのキーが離された(押したままの段階なら、次のstepで離す)"""
         self.physical.discard(name)
@@ -315,7 +319,7 @@ class App:
             self.screenshot()
             return
         if ev.key == pygame.K_BACKSPACE:
-            self.typer.add_keys([["LEFT"], ["SHIFT"], ["LEFT"]])
+            self.typer.add_live_keys([["LEFT"], ["SHIFT"], ["LEFT"]])
             return
         if ev.key == pygame.K_F10:
             self.toggle_help()
@@ -344,7 +348,7 @@ class App:
         for ch in text:
             if ch.isascii() and (ch.isalnum() or ch == " "):
                 continue  # KEYDOWNで押しっぱなしとして伝えた
-            self.typer.add_text(ch)
+            self.typer.add_live_keys(keys_for(ch))
 
     # ---- ショートカットと右クリックのメニュー ----
     # Fキーは、Macでは明るさや音量に、Windowsでもほかのアプリに取られることがある。
