@@ -25,7 +25,7 @@ def test_app_types_and_computes():
     assert lcd_text(app.m).strip().startswith("36")
     for ch in "(+)":  # 記号はTEXTINPUTから入り、SHIFT付きの打鍵に直る
         app.handle(pygame.event.Event(pygame.TEXTINPUT, text=ch))
-    assert app.typer.queue[0] == [app.typer.LIVE, "SHIFT"]
+    assert app.typer.queue[0][0] == app.typer.LIVE and app.typer.queue[0][2:] == ["SHIFT"]
     for _ in range(30):
         app.frame()
     assert not app.typer.busy
@@ -333,7 +333,8 @@ def test_fast_typing_is_not_dropped():
         if i:  # 前のキーは、次のキーを押してから離す
             prev = getattr(pygame, "K_" + text[i - 1].lower())
             app.handle(ev(pygame.KEYUP, key=prev, mod=0, unicode="", scancode=0))
-        app.frame()
+        for _ in range(3):  # 毎秒10打鍵
+            app.frame()
     last = getattr(pygame, "K_" + text[-1].lower())
     app.handle(ev(pygame.KEYUP, key=last, mod=0, unicode="", scancode=0))
     for _ in range(60):
@@ -347,6 +348,28 @@ def test_fast_typing_is_not_dropped():
     for _ in range(30):
         app.frame()
     assert lcd_text(app.m).replace("?", " ").strip() == text + "Z", lcd_text(app.m)
+    # Backspaceを続けて押しても(1秒に2〜3回)、押した数だけ消える
+    for _ in range(4):
+        app.handle(ev(pygame.KEYDOWN, key=pygame.K_BACKSPACE, mod=0, unicode="", scancode=0))
+        app.handle(ev(pygame.KEYUP, key=pygame.K_BACKSPACE, mod=0, unicode="", scancode=0))
+        for _ in range(12):
+            app.frame()
+    for _ in range(90):
+        app.frame()
+    assert lcd_text(app.m).replace("?", " ").strip() == (text + "Z")[:-4], lcd_text(app.m)
+    # 連打しすぎた分は捨て、あとから遅れて流れてこない
+    for ch in "QWERTYUIOPQWERTYUIOP":
+        k = getattr(pygame, "K_" + ch.lower())
+        app.handle(ev(pygame.KEYDOWN, key=k, mod=0, unicode="", scancode=0))
+        app.handle(ev(pygame.KEYUP, key=k, mod=0, unicode="", scancode=0))
+        app.frame()
+    for _ in range(30):  # 最後に押してから1秒
+        app.frame()
+    settled = lcd_text(app.m)
+    assert not app.typer.busy
+    for _ in range(60):
+        app.frame()
+    assert lcd_text(app.m) == settled
     app.close()
 
 

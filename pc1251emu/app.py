@@ -131,6 +131,9 @@ class Typer:
     # 1打鍵に0.1秒(毎秒10打鍵)かける。これより速く打った分は順番待ちになる。
     LIVE_DOWN = CLOCK * 50 // 1000
     LIVE_UP = CLOCK * 50 // 1000
+    # 連打しすぎて順番待ちが溜まったとき、これより長く待ったキーは捨てる
+    # (実機でも受け取れない速さの分。遅れて流れてくるのを防ぐ)
+    LIVE_MAX_WAIT = CLOCK * 600 // 1000
 
     def __init__(self, machine: PC1251, on_mode=None):
         self.m = machine
@@ -145,16 +148,20 @@ class Typer:
         # 離すまで(か次のキーが来るまで)そのまま押しておく。
         self.physical: set[str] = set()
         self.live = False
+        self.quick = False
+        self.stamp = ""
 
     def press_live(self, name: str) -> None:
         """パソコンのキーが押された。順番待ちに入れる"""
         if name not in self.physical:
             self.physical.add(name)
-            self.queue.append([self.LIVE, name])
+            self.queue.append([self.LIVE, str(self.m.cpu.cycles), name])
 
     def add_live_keys(self, keys: list[list[str]]) -> None:
-        """パソコンで打った記号やBackspaceを、ふつうの速さで順に押す(押すのが見える)"""
-        self.queue.extend([self.LIVE, *k] for k in keys)
+        """パソコンで打った記号やBackspaceを、ふつうの速さで順に押す(押すのが見える)。
+        いくつかの打鍵でできた1文字は、同じ時刻の印をつけてまとめて扱う"""
+        stamp = str(self.m.cpu.cycles)
+        self.queue.extend([self.LIVE, stamp, *k] for k in keys)
 
     def release_live(self, name: str) -> None:
         """パソコンのキーが離された(押したままの段階なら、次のstepで離す)"""
@@ -197,12 +204,24 @@ class Typer:
                 self.phase = 1
                 return
             if self.cur[:1] == [self.LIVE]:
-                self.cur = self.cur[1:]
+                stamp = self.cur[1]
+                self.cur = self.cur[2:]
+                late = c - int(stamp) > self.LIVE_MAX_WAIT
+                if stamp != self.stamp and late and not set(self.cur) <= self.physical:
+                    # 待ちすぎた打鍵は、同じ文字の残りの打鍵ごと捨てる(押し続けているキーは残す)
+                    while self.queue and self.queue[0][:2] == [self.LIVE, stamp]:
+                        self.queue.pop(0)
+                    self.cur = None
+                    return
+                self.stamp = stamp  # 1文字の途中の打鍵は、遅れていても最後まで押す
                 self.live = True
             else:
                 self.live = False
+            # パソコンのキーそのもの(英数字など)は短く押す。記号やBackspaceを直した
+            # 打鍵(SHIFTや◀を続けて押す)は、ROMが追いつくように打ち込みと同じ長さにする
+            self.quick = self.live and set(self.cur) <= self.physical
             self.m.held.update(self.cur)
-            self.until = c + (self.LIVE_DOWN if self.live else self.DOWN)
+            self.until = c + (self.LIVE_DOWN if self.quick else self.DOWN)
             self.phase = 0
         elif self.phase == 2:
             # 押したままの段階: 離されたか、次のキーが来たら離す
@@ -223,7 +242,7 @@ class Typer:
         if self.cur == ["ENTER"]:
             self.until = c + self.AFTER_ENTER
         else:
-            self.until = c + (self.LIVE_UP if self.live else self.UP)
+            self.until = c + (self.LIVE_UP if self.quick else self.UP)
         self.phase = 1
 
 
