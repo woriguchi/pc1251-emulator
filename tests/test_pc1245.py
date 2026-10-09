@@ -99,6 +99,20 @@ def test_long_line():
     assert lines[2] == "30 END"
 
 
+def test_full_line_by_inserting():
+    """上限ちょうど(行番号の桁と中間コードで79字)の行も、命令を先に打ってから挿入して入れられる"""
+    line = (
+        '310 "C":LPRINT "":FOR K=0 TO M-11:FOR J=0 TO N-11:D(K,J)=0:FOR I=0 TO L-1:'
+        "D(K,J)=D(K,J)+B(K,I)*C(I,J):NEXT I"
+    )
+    m, t = boot()
+    enter(m, t, line + "\n")
+    lines = dict(basictext.program_lines(m.mem, m.model.prog_start))
+    assert len("310") + len(lines[310]) == 79
+    text = basictext.program_text(m.mem, start=m.model.prog_start)
+    assert text.splitlines()[0].replace(" ", "") == line.replace(" ", "")
+
+
 def test_program_survives_power_off():
     m, t = boot()
     enter(m, t, "10 PRINT 123\n")

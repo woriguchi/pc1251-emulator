@@ -85,6 +85,61 @@ def test_long_line():
     assert lines[2] == "30 END"
 
 
+FULL = (  # 行番号の桁と中間コードでちょうど79字。後ろに足すだけでは、最後のNEXTを打つ時点であふれる
+    '310 "C":LPRINT "":FOR K=0 TO M-11:FOR J=0 TO N-11:D(K,J)=0:FOR I=0 TO L-1:'
+    "D(K,J)=D(K,J)+B(K,I)*C(I,J):NEXT I"
+)
+
+
+def test_full_line_by_inserting():
+    """上限ちょうどの長い行は、命令を先に打ってから残りを途中に挿入して入れる
+    (実機のテープの見本にある行の数字を2字増やしたもの)"""
+    from pc1251emu.basictext import program_lines, program_text
+    from pc1251emu.keytype import insert_plan
+
+    assert insert_plan(FULL) is not None
+    m, t = boot()
+    m.mode = "PRO"
+    m.run(CLOCK // 5)
+    t.add_program(FULL + "\n320 END\n")
+    while t.busy:
+        t.step()
+        m.run(CLOCK // 200)
+    m.run(CLOCK // 2)
+    lines = dict(program_lines(m.mem))
+    assert len("310") + len(lines[310]) == 79
+    text = program_text(m.mem).splitlines()
+    assert text[0].replace(" ", "") == FULL.replace(" ", "")
+    assert text[1] == "320 END"
+
+
+def test_exponent_sign():
+    """指数のE(Expキー、4Bh)は「[E]」か「€」で書いて打ち込め、書き出すと「[E]」に戻る。
+    英字のE(55h)とは別の字で、RUNすると指数として計算される"""
+    from pc1251emu.basictext import program_lines, program_text
+
+    m, t = _enter_program("10 A=1[E]-8\n20 B=[E]3\n30 C=2.5€2\n40 PRINT A*1[E]8+B+C\n")
+    lines = dict(program_lines(m.mem))
+    assert lines[10] == bytes([0x51, 0x34, 0x41, 0x4B, 0x36, 0x48])
+    assert lines[20] == bytes([0x52, 0x34, 0x4B, 0x43])
+    assert program_text(m.mem).splitlines()[:3] == ["10 A=1[E]-8", "20 B=[E]3", "30 C=2.5[E]2"]
+    m.mode = "RUN"
+    m.run(CLOCK // 5)
+    assert typ(m, t, "RUN\n", wait=2).strip().startswith("1251")  # 1+1000+250
+
+
+def test_pi_and_words_in_strings():
+    """π(SHIFT+0、19h)は書き出して打ち直せる。文字列の中に中間コードがあれば、
+    実機のLISTと同じく綴りを空白で挟んで出す(実機のテープの見本にある)"""
+    from pc1251emu.basictext import keyword_table, line_text, program_lines, program_text
+
+    m, _ = _enter_program("10 A=π*2\n")
+    assert dict(program_lines(m.mem))[10] == bytes([0x51, 0x34, 0x19, 0x37, 0x42])
+    assert program_text(m.mem) == "10 A=π*2\n"
+    body = bytes([0xC2, 0x12, 0x51, 0xCB, 0xC1, 0x13, 0x12])  # INPUT "A{DATA}{PRINT}?"
+    assert line_text(body, keyword_table(m.mem)) == 'INPUT "A DATA PRINT ?"'
+
+
 def test_after_dump_written_after_run():
     """# after: のダンプは、実行の文字列を打ったあとに書く(DIMで消されない)"""
     from pc1251emu.programs import Program

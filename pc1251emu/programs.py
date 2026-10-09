@@ -11,7 +11,8 @@
     *.bas  BASICのプログラム(テキスト)。PROモードでNEWしてから打ち込む
     *.hex  16進ダンプ。「番地 データ」の行で、RAMにそのまま書き込む
            (記事のダンプと同じ形。行末の「:チェックサム」は読み飛ばす。
-           「;」から後ろはコメントなので、ニーモニックを書き添えておける)
+           「;」から後ろはコメントなので、ニーモニックを書き添えておける。
+           YASM61860が出す「c000 : 12 34 … : 5a」の形も読める)
 
 同じ名前の.basと.hexがあれば1本のプログラムとしてまとめ、ダンプを書いて
 からBASICを打ち込む。マシン語とそれを呼ぶBASICを組にしておける。
@@ -21,8 +22,14 @@
     # title: 表示する名前
     # run: CALL &C300     実行するときにRUNモードで打つ文字列(既定はRUN)
     # hex: pcint.hex      先に書き込む16進ダンプ(同じ場所か置き場所から探す)
+    # bin: code.bin &C300 先に書き込むマシン語のバイナリのファイル名と、置く番地。
+                          .binのファイルにはバイトが並んでいるだけで、置く番地は
+                          書かれていないので、# bin:の行で指定する
+                          (PocketToolsのbin2wavで使う.binと同じもの。YASM61860の-rは
+                          番地0からの中身を書き出すので、YASMはダンプ(-d)を.hexにする)
     # after: code.hex     実行するときに打つ文字列を打ったあとで書き込むダンプ。
-                          BASICの側でDIMなどをしてからマシン語を読み込む記事のため
+                          BASICの側でDIMなどをしてからマシン語を読み込む記事のため。
+                          「# after: code.bin &C300」のように.binも使える
     # model: 1251         動く機種(いくつもあるときは「,」で区切る)。書かなければ
                           置いたフォルダで決まる(直下ならどの機種でも)。ほかの機種では
                           一覧に「(PC-1251用)」と出て、読み込まない
@@ -32,6 +39,7 @@
 """
 
 import os
+import re
 from dataclasses import dataclass, field
 
 from .machine import MODELS
@@ -87,6 +95,7 @@ class Program:
     blocks: list[tuple[int, bytes]] = field(default_factory=list)
     after: list[tuple[int, bytes]] = field(default_factory=list)  # # after: で、実行のあとに書く
     model: str = ""  # # model: の値。空ならどの機種でも
+    bin_links: list[str] = field(default_factory=list)  # 「bin: code.bin &C300」など(書き出し用)
     errors: list[str] = field(default_factory=list)
 
     @property
@@ -124,9 +133,14 @@ def _directive(line: str) -> tuple[str, str] | None:
         return None
     key, val = body.split(":", 1)
     key = key.strip().lower()
-    if key in ("title", "run", "hex", "after", "model"):
+    if key in ("title", "run", "hex", "bin", "after", "model"):
         return key, val.strip()
     return None
+
+
+# YASM61860の16進ダンプの行。「c000 : 12 34 … : 5a」。行の番地は8の倍数に切り下げてあり、
+# 書き始めが行の途中のときは、そこまでを1バイトにつき3文字の空白で埋めている
+YASM_LINE = re.compile(r"([0-9A-Fa-f]{4}) : (.*)")
 
 
 def parse_hex(text: str, where: str = "") -> tuple[list[tuple[int, bytes]], list[str]]:
@@ -137,12 +151,21 @@ def parse_hex(text: str, where: str = "") -> tuple[list[tuple[int, bytes]], list
         line = raw.split(";", 1)[0].strip()  # 「;」から後ろは行の途中でもコメント
         if not line or line.startswith("#"):
             continue
-        parts = line.split(None, 1)
-        if len(parts) != 2:
-            continue
+        yasm = YASM_LINE.fullmatch(line)
+        if yasm:
+            head, body = yasm[1], yasm[2]
+        else:
+            parts = line.split(None, 1)
+            if len(parts) != 2:
+                continue
+            head, body = parts[0].rstrip(":"), parts[1]
         try:
-            addr = int(parts[0].rstrip(":"), 16)
-            data = bytes.fromhex(parts[1].split(":")[0].replace(" ", ""))
+            addr = int(head, 16)
+            if yasm:
+                pad = len(body) - len(body.lstrip(" "))
+                if addr % 8 == 0 and pad % 3 == 0:
+                    addr += pad // 3
+            data = bytes.fromhex(body.split(":")[0].replace(" ", ""))
         except ValueError:
             errors.append(f"{where}{n}行目を16進ダンプとして読めない: {line[:30]}")
             continue
@@ -150,9 +173,42 @@ def parse_hex(text: str, where: str = "") -> tuple[list[tuple[int, bytes]], list
     return blocks, errors
 
 
-def _add_hex(prog: Program, name: str, near: str, after: bool = False) -> None:
-    """# hex: (# after:)で指定したダンプを探して書き込む分に足す。同じフォルダ、
-    置き場所の同じ機種のフォルダ、置き場所の直下の順に探す"""
+def parse_addr(text: str) -> int | None:
+    """番地の書き方(&C300、0xC300、C300)を読む。番地でなければNone"""
+    t = text.strip()
+    for prefix in ("&", "0x", "0X", "$"):
+        if t.startswith(prefix):
+            t = t[len(prefix) :]
+            break
+    if not re.fullmatch(r"[0-9A-Fa-f]{1,4}", t):
+        return None
+    return int(t, 16)
+
+
+def read_bin(path: str, addr: int, where: str = "") -> tuple[list[tuple[int, bytes]], list[str]]:
+    """マシン語のバイナリ(.bin)を、番地addrから置くものとして読む"""
+    try:
+        data = open(path, "rb").read()
+    except OSError as e:
+        return [], [f"{where}{e}"]
+    if not data:
+        return [], [f"{where}中身が空"]
+    if addr + len(data) > 0x10000:
+        return [], [f"{where}&{addr:04X}から{len(data)}バイトでは、&FFFFを越える"]
+    return [(addr, data)], []
+
+
+def _add_hex(prog: Program, spec: str, near: str, key: str = "hex") -> None:
+    """# hex:・# bin:・# after:で指定したダンプを探して書き込む分に足す。同じフォルダ、
+    置き場所の同じ機種のフォルダ、置き場所の直下の順に探す。.binは後ろに番地を書く"""
+    name, addr = spec, None
+    parts = spec.rsplit(None, 1)
+    if len(parts) == 2 and parse_addr(parts[1]) is not None:
+        name, addr = parts[0], parse_addr(parts[1])
+    is_bin = name.lower().endswith(".bin")
+    if is_bin and addr is None:
+        prog.errors.append(f"# {key}: {name}に置く番地がない(例:# bin: {name} &C300)")
+        return
     sub = model_dir(folder_model(os.path.join(near, name)) or "-")
     places = [near] + [os.path.join(d, sub) for d in library_dirs()] + library_dirs()
     for d in places:
@@ -160,11 +216,16 @@ def _add_hex(prog: Program, name: str, near: str, after: bool = False) -> None:
         if os.path.exists(p):
             if p not in prog.paths:
                 prog.paths.append(p)
-                blocks, errors = parse_hex(open(p, encoding="utf-8").read(), name + " ")
-                (prog.after if after else prog.blocks).extend(blocks)
+                if is_bin:
+                    assert addr is not None
+                    blocks, errors = read_bin(p, addr, name + " ")
+                    prog.bin_links.append(f"{key}: {name} &{addr:04X}")
+                else:
+                    blocks, errors = parse_hex(open(p, encoding="utf-8").read(), name + " ")
+                (prog.after if key == "after" else prog.blocks).extend(blocks)
                 prog.errors.extend(errors)
             return
-    prog.errors.append(f"# {'after' if after else 'hex'}: {name}が見つからない")
+    prog.errors.append(f"# {key}: {name}が見つからない")
 
 
 def _read_into(prog: Program, path: str) -> None:
@@ -177,8 +238,8 @@ def _read_into(prog: Program, path: str) -> None:
     for line in text.split("\n"):
         if line.strip().startswith("#"):
             d = _directive(line.strip())
-            if d and d[0] in ("hex", "after"):
-                _add_hex(prog, d[1], os.path.dirname(path), after=d[0] == "after")
+            if d and d[0] in ("hex", "bin", "after"):
+                _add_hex(prog, d[1], os.path.dirname(path), d[0])
             elif d and not getattr(prog, d[0]):
                 setattr(prog, d[0], d[1])
     if path.lower().endswith(".hex"):

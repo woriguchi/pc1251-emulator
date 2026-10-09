@@ -19,7 +19,7 @@ import pygame
 import typer
 
 from . import basictext, display, programs, tape
-from .audio import RATE, Buzzer
+from .audio import RATE, Buzzer, SoundQueue, speed_adjust
 from .keytype import keys_for, keys_for_program
 from .machine import CLOCK, MODELS, PC1251, RomNotFound
 
@@ -95,6 +95,7 @@ def export_program(m, folder: str, prog: "programs.Program | None" = None) -> st
     head = [f"# title: {prog.title if prog else 'BASIC'}({when}の書き出し)"]
     if prog:
         head += [f"# hex: {os.path.basename(p)}" for p in prog.paths if p.lower().endswith(".hex")]
+        head += [f"# {link}" for link in prog.bin_links]
         if prog.run:
             head.append(f"# run: {prog.run}")
     if prog and programs.folder_model(prog.paths[0]):
@@ -316,13 +317,19 @@ class App:
         self._menu_rows: list[tuple[int, pygame.Rect]] = []
         self.popup: dict | None = None  # 右クリックのメニュー
         self.reset_frames = 0  # メニューやショートカットでRESETを押している残りフレーム
-        self.sound = None
+        self.sound = None  # SDLの待ち行列が使えないときの、mixerのChannel
+        self.queue: SoundQueue | None = None  # 鳴らす音の出口(audio.SoundQueue)
         if not args.mute:
             try:
-                pygame.mixer.init(RATE, -16, 1, 512, allowedchanges=0)
-                self.sound = pygame.mixer.Channel(0)
-            except pygame.error:
-                self.sound = None
+                pygame.mixer.quit()  # pygame.initが開いたmixerの装置は使わない
+                self.queue = SoundQueue()
+            except (OSError, AttributeError) as e:
+                print(f"SDLの待ち行列が使えないので、mixerで鳴らします({e})", file=sys.stderr)
+                try:
+                    pygame.mixer.init(RATE, -16, 1, 512, allowedchanges=0)
+                    self.sound = pygame.mixer.Channel(0)
+                except pygame.error:
+                    self.sound = None
         self.sound_channels = 1
         if self.sound is not None:
             freq, _, channels = pygame.mixer.get_init()
@@ -662,6 +669,12 @@ class App:
         if os.path.splitext(path)[1].lower() in programs.EXTS:
             self.open_program(programs.load_program(path))
             return
+        if path.lower().endswith(".bin"):  # 番地を持たないので、そのままでは置けない
+            self.say(
+                f"{os.path.basename(path)}は、.basに「# bin: 名前.bin &C300」と書いて読み込みます",
+                6,
+            )
+            return
         try:
             self.typer.add_text(open(path, encoding="utf-8").read())
         except (OSError, UnicodeDecodeError):
@@ -976,7 +989,10 @@ class App:
             self.say(f"{self.loading}を読み込みました")
         # 1フレームでちょうどCLOCK/FPSサイクル進める。前のフレームで命令の途中まで
         # はみ出した分は差し引く(音の標本の数が再生の速さとそろうように)
-        target = m.cpu.cycles + int(speed * per_frame) - self.overshoot
+        # 音の待ち行列のたまり具合で、進めるサイクルを増減する。フレームが遅れたときは
+        # その分を多めに進めて取り戻す(audio.speed_adjust)
+        adjust = speed_adjust(self.queue.level()) if self.queue and speed and not typing else 1
+        target = m.cpu.cycles + int(speed * per_frame * adjust) - self.overshoot
         self.overshoot = 0
         while (left := target - m.cpu.cycles) > 0:
             if not self.boot_frames:
@@ -990,7 +1006,16 @@ class App:
         wav = self.tape_out.feed(m.sound_events, m.cpu.cycles, m.pc_out >> 4)
         if wav is not None:
             self.save_tape(wav)
-        if self.sound is not None and speed and not typing:
+        if self.queue is not None and speed and not typing:
+            # 無音のところも積み、待ち行列のたまり具合を保つ
+            sound = self.buzzer.render(
+                m.sound_events, c0, m.cpu.cycles, self.turbo, keep_silent=True
+            )
+            self.queue.push(sound)
+        elif self.queue is not None:
+            self.buzzer.hold(m.pc_out >> 4)
+            self.queue.clear()
+        elif self.sound is not None and speed and not typing:
             # 1倍でないときは、テープの早送りと同じく音の高さも速さの倍率だけ変わる
             sound = self.buzzer.render(m.sound_events, c0, m.cpu.cycles, self.turbo)
             self.feed_sound(sound)
@@ -1064,6 +1089,8 @@ class App:
                 self.m.power_off()
             os.makedirs(STATE_DIR, exist_ok=True)
             self.m.save_ram(self.ram_file)
+        if self.queue is not None:
+            self.queue.close()
         pygame.quit()
 
     def run(self) -> None:

@@ -236,6 +236,11 @@ def test_samples_load():
             continue
         app.open_program(prog)
         _settle(app)
+        app.m.brk = True  # 読み込むと動き出す見本(anime)を止めてからLISTする
+        for _ in range(10):
+            app.frame()
+        app.m.brk = False
+        _settle(app)
         app.typer.add_mode("PRO")
         app.typer.add_text("LIST\n")
         _settle(app)
@@ -480,6 +485,63 @@ def test_helper_dumps_hidden(tmp_path):
     assert {"pcint", "mogura"} <= names  # BASICと組のダンプは、ほかから使われていても出る
 
 
+def test_yasm_dump():
+    """YASM61860の16進ダンプ(dumpoutの出力)をそのまま.hexとして読める。
+    行の途中から始まる所は、番地を8の倍数に切り下げ、手前を1バイト3文字の空白で埋めている"""
+    from pc1251emu import programs
+
+    # ORG &C103に01〜0B、ORG &C200にAA BBを置いたときの出力
+    text = "\n\nc100 :          01 02 03 04 05 : 0f\nc108 : 06 07 08 09 0a 0b \n\nc200 : aa bb "
+    blocks, errors = programs.parse_hex(text)
+    assert not errors
+    assert blocks == [
+        (0xC103, bytes([1, 2, 3, 4, 5])),
+        (0xC108, bytes(range(6, 12))),
+        (0xC200, bytes([0xAA, 0xBB])),
+    ]
+    # 記事の形(番地のあとに空白、行末に「:チェックサム」)は今までどおり
+    assert programs.parse_hex("C200 04F1F9:EE\nC208: 01 02")[0] == [
+        (0xC200, bytes([0x04, 0xF1, 0xF9])),
+        (0xC208, bytes([1, 2])),
+    ]
+
+
+def test_bin_link(tmp_path):
+    """# bin: で.binを番地を添えて読み込む。# after: でも使える。番地がなければエラー"""
+    from pc1251emu import programs
+    from pc1251emu.app import export_program
+
+    (tmp_path / "code.bin").write_bytes(bytes([0x12, 0x34, 0x56]))
+    (tmp_path / "late.bin").write_bytes(bytes([0x9A]))
+    (tmp_path / "game.bas").write_text(
+        "# bin: code.bin &C300\n# after: late.bin 0xC400\n10 CALL &C300\n", encoding="utf-8"
+    )
+    (tmp_path / "noaddr.bas").write_text("# bin: code.bin\n10 END\n", encoding="utf-8")
+    (tmp_path / "over.bas").write_text("# bin: code.bin &FFFE\n10 END\n", encoding="utf-8")
+    items = programs.scan([str(tmp_path)])
+    assert sorted(p.name for p in items) == ["game", "noaddr", "over"]  # .binは一覧に出ない
+    game = next(p for p in items if p.name == "game")
+    assert not game.errors
+    assert game.blocks == [(0xC300, bytes([0x12, 0x34, 0x56]))]
+    assert game.after == [(0xC400, bytes([0x9A]))]
+    assert game.kinds == "BASIC+HEX" and game.size == 4
+    noaddr = next(p for p in items if p.name == "noaddr")
+    assert not noaddr.blocks and any("番地がない" in e for e in noaddr.errors)
+    over = next(p for p in items if p.name == "over")
+    assert not over.blocks and any("&FFFFを越える" in e for e in over.errors)
+
+    # 読み込んで動かすと、RAMに書かれる
+    app = _app("1251")
+    app.open_program(game, run=False)
+    _settle(app)
+    assert bytes(app.m.mem[0xC300:0xC303]) == bytes([0x12, 0x34, 0x56])
+    # BASICを書き出すと、# bin:・# after:もそのまま残る
+    path = export_program(app.m, str(tmp_path / "out"), game)
+    assert path is not None
+    text = open(path, encoding="utf-8").read()
+    assert "# bin: code.bin &C300" in text and "# after: late.bin &C400" in text
+
+
 def test_ball_runs():
     """弾むボールは、どちらの機種でもボールが文字の区切りをまたがずに液晶の全幅を
     弾んで進み、BRKでBASICへ戻る"""
@@ -593,6 +655,7 @@ def test_breakout_every_row():
         r[0x10:0x14] = bytes([20, 36, 1, 0])  # 一番上の段を横に進む玉
         app.frame()
         app.frame()
+        _to_play(m, model)  # フレームの途中だと、玉の位置は進んでいても描く前のことがある
         x = r[0x10]
         column = m.mem[0xF800 + x]
         assert column & 1 and not column & 0x7E, (model, x, hex(column))
@@ -1032,3 +1095,53 @@ def test_lcd_ram_mirrors():
             assert (m.read(page + 0x23) == 0x5A) == mirrored, (model, hex(page))
             m.write(0xF823, 0)
         assert m.read(0xE7FF) == 0 and m.read(0xF000) == 0
+
+
+def _queue_run(fps: float, clock: float, jitter_ms: float, seconds: float = 60) -> tuple[int, int]:
+    """SoundQueueに、フレームごとに標本を積み、音の装置が512標本ずつ取っていく様子をまねる。
+    fpsは実際のフレームの速さ、clockは装置の時計の速さの比。音が切れた回数と、
+    フレームの音を捨てた回数を返す"""
+    import random
+
+    from pc1251emu import audio
+
+    class FakeSDL:
+        def __init__(self):
+            self.queued = 0  # バイト
+
+        def SDL_GetQueuedAudioSize(self, dev):
+            return self.queued
+
+        def SDL_QueueAudio(self, dev, data, n):
+            self.queued += n
+
+    q = object.__new__(audio.SoundQueue)
+    q.sdl, q.dev, q.underruns, q.started = FakeSDL(), 1, 0, False  # pyrefly: ignore
+    rnd = random.Random(1)
+    t_frame, t_dev, gaps, dropped = 0.0, 0.0, 0, 0
+    step = 512 / (audio.RATE * clock)
+    while t_frame < seconds:
+        while t_dev <= t_frame:  # 装置が取る
+            need = 512 * 2
+            if q.sdl.queued < need and t_dev > 1:
+                gaps += 1
+            q.sdl.queued = max(0, q.sdl.queued - need)
+            t_dev += step
+        n = round(audio.FRAME_SAMPLES * audio.speed_adjust(q.level()))  # 進めたサイクルに比例
+        before = q.sdl.queued
+        q.push(bytes(2 * n))
+        dropped += q.sdl.queued == before and t_frame > 1
+        dt = 1 / fps + rnd.gauss(0, jitter_ms / 1000)
+        if rnd.random() < 0.01:
+            dt += 0.04  # ときどき40ms遅れるフレーム
+        t_frame += max(0.0, dt)
+    return gaps, dropped
+
+
+def test_sound_queue_keeps_up():
+    """フレームの速さが揺れたり、ときどき40ms遅れたり、音の装置の時計とずれたりしても、
+    待ち行列が尽きず、あふれもしない(以前のmixer.Channelのやり方では何十回も途切れた)"""
+    for fps in (29.9, 30.0, 30.3):
+        for clock in (0.995, 1.0, 1.005):
+            gaps, dropped = _queue_run(fps, clock, jitter_ms=2)
+            assert (gaps, dropped) == (0, 0), (fps, clock, gaps, dropped)

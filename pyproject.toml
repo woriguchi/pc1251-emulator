@@ -1,6 +1,6 @@
 [project]
 name = "pc1251-emu"
-version = "0.2.1"
+version = "0.3.0"
 description = "SHARP PC-1251/PC-1245のエミュレータ(SC61860を命令単位で実行し、ROMを動かす)"
 readme = "README.md"
 requires-python = ">=3.10"

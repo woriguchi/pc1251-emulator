@@ -22,7 +22,12 @@ def _have(model: str) -> bool:
 HAVE_ROM = _have("1251")
 HAVE_ROM_1245 = _have("1245")
 
-NO_ROM_NEEDED = {"test_switch_knob_matches_label", "test_version", "test_lcd_ram_mirrors"}
+NO_ROM_NEEDED = {
+    "test_switch_knob_matches_label",
+    "test_version",
+    "test_lcd_ram_mirrors",
+    "test_sound_queue_keeps_up",
+}
 
 
 def pytest_collection_modifyitems(config, items):

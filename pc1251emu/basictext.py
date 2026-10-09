@@ -20,6 +20,8 @@ CHARS: dict[int, str] = {
     0x1A: "√", 0x1B: ",", 0x1C: ";", 0x1D: ":", 0x1E: "@", 0x1F: "&",
     0x30: "(", 0x31: ")", 0x32: ">", 0x33: "<", 0x34: "=", 0x35: "+", 0x36: "-",
     0x37: "*", 0x38: "/", 0x39: "^", 0x4A: ".",
+    0x4B: "[E]",  # 指数のE(Expキー)。英字のE(55h)とは別の字。PocketToolsと同じ書き方
+    0x19: "π",  # SHIFT+0。関数のPI(中間コード)とは別の字
 }  # fmt: skip
 for _i in range(10):
     CHARS[0x40 + _i] = str(_i)
@@ -32,7 +34,7 @@ OPERATORS = {0x82: ">=", 0x83: "<=", 0x84: "<>"}
 # 前後に空白を置かない中間コード(比較の記号)
 _TIGHT = set(OPERATORS)
 # 命令のあとにこれらが続くときは、あいだに空白を置く
-_SPACE_BEFORE = set('ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"&(-.√')
+_SPACE_BEFORE = set('ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"&(-.√π') | {"[E]"}
 
 
 def keyword_table(mem) -> dict[int, str]:
@@ -101,6 +103,13 @@ def line_text(body: bytes, keywords: dict[int, str]) -> str:
         if rest_raw or in_string or c < 0x7D:
             if c == 0x12 and not rest_raw:
                 in_string = not in_string
+            if c >= 0x7D and c in keywords:
+                # 文字列やREMの中の中間コード。実機のLISTと同じく綴りを空白で挟んで出す
+                # (打ち直すと英字になるので、バイトは変わるが表示は同じ)
+                if out and not out[-1].endswith(" "):
+                    out.append(" ")
+                out.append(keywords[c] + " ")
+                continue
             out.append(CHARS.get(c, "?"))
             continue
         word = keywords.get(c)

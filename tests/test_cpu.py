@@ -62,6 +62,39 @@ def test_external_memory():
     assert cpu.ram[A] == 0x99
 
 
+def test_cycles_from_manual():
+    # IYS / DYS / IXL。PC-1350の機械語マニュアルの値
+    cpu = SC61860(FlatBus(bytes([0x26, 0x27, 0x24])))
+    cpu.ram[4:8] = bytes([0x00, 0x20, 0x00, 0x30])  # X=2000、Y=3000(命令を書き換えないように)
+    assert [cpu.step() for _ in range(3)] == [6, 6, 7]
+
+
+def test_case_table():
+    # LIA 07 / PTC 2,0100 / DTC 05:0200, 07:0300, それ以外:0400
+    code = bytes(
+        [0x02, 0x07, 0x7A, 0x02, 0x01, 0x00, 0x69, 0x05, 0x02, 0x00, 0x07, 0x03, 0x00, 0x04, 0x00]
+    )
+    cpu = SC61860(FlatBus(code))
+    cpu.r = 0x5C
+    cycles = [cpu.step() for _ in range(3)]
+    assert cycles == [4, 8, 5 + 7 * 2]
+    assert cpu.pc == 0x0300
+    assert (cpu.ram[0x5B], cpu.ram[0x5A]) == (0x01, 0x00)  # 戻る先の0100
+
+
+def test_anid_uses_r_minus_1():
+    # LIDP 1234 / ANID 0F。(R-1)に書き換える前の(DP)が入る
+    bus = FlatBus(bytes([0x10, 0x12, 0x34, 0xD4, 0x0F]))
+    bus.mem[0x1234] = 0xAB
+    cpu = SC61860(bus)
+    cpu.r = 0x5C
+    cpu.step()
+    cpu.step()
+    assert bus.mem[0x1234] == 0x0B
+    assert cpu.ram[0x5B] == 0xAB
+    assert cpu.r == 0x5C
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

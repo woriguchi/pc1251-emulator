@@ -12,6 +12,10 @@
 * CUP・CDN: 待つあいだPを1つずつ増やす(PC-1350の機械語マニュアル、utz82の表)。
   終わったあと、Xinが0ならZを立てる。MAMEは(P)を増やし、ZにXinをそのまま入れる。
   PockEmulとPokecomGO(digihori/pokecom)の実装とも見比べた。
+* IYS・DYS、PTC、DTCのサイクル数: IYS・DYSは6、PTCは8、DTCは5+7d(dはPTCで
+  決めた件数)。PC-1350の機械語マニュアルの値。MAMEはそれぞれ7、9、3。
+* ANID・ORID・TSID: (R-1)を一時的な置き場に使う(同じマニュアル)。書く値は
+  書き換える前の(DP)にした(utz82の表)。MAMEは書かない。
 
 それ以外のサイクル数はMAMEの値を使う。
 """
@@ -191,9 +195,9 @@ class SC61860:
                     return 6
                 if mode == 1:
                     ram[A] = rd(s.dp)
-                else:
-                    wr(s.dp, ram[A])
-                return 7
+                    return 7
+                wr(s.dp, ram[A])
+                return 6
 
             return f
 
@@ -387,6 +391,7 @@ class SC61860:
             def f():
                 n = s._fetch()
                 v = rd(s.dp)
+                ram[(s.r - 1) & 0x7F] = v  # (R-1)を一時的な置き場に使う
                 if kind == "and":
                     v &= n
                     wr(s.dp, v)
@@ -836,15 +841,16 @@ class SC61860:
         if op == 0x69:  # DTC
 
             def f():
+                cyc = 5 + 7 * s.h
                 for _ in range(s.h):
                     v = s._fetch()
                     a = s._fetch16()
                     s.z = int(v == ram[A])
                     if s.z:
                         s.pc = a
-                        return 3
+                        return cyc
                 s.pc = s._fetch16()
-                return 3
+                return cyc
 
             return f
         if op == 0x6B:  # TEST n
@@ -882,7 +888,7 @@ class SC61860:
                 a = s._fetch16()
                 s.push(a >> 8)
                 s.push(a & 0xFF)
-                return 9
+                return 8
 
             return f
         if op == 0x7C:
