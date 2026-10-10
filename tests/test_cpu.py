@@ -95,6 +95,15 @@ def test_anid_uses_r_minus_1():
     assert cpu.r == 0x5C
 
 
+def test_liih_is_two_bytes():
+    # LII 55 / LIIH 00 / LIIH 00 / LIB 25。LIIHはI=H、H=nの2バイト命令(utz82の表)。
+    # 2つ続けるとIが0になる(「走れ!セコイライン」COR版のC2B1)
+    cpu, _ = run(bytes([0x00, 0x55, 0x72, 0x00, 0x72, 0x00, 0x03, 0x25]), 4)
+    assert cpu.ram[0] == 0  # I
+    assert cpu.ram[B] == 0x25
+    assert cpu.pc == 8
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

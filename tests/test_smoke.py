@@ -1145,3 +1145,52 @@ def test_sound_queue_keeps_up():
         for clock in (0.995, 1.0, 1.005):
             gaps, dropped = _queue_run(fps, clock, jitter_ms=2)
             assert (gaps, dropped) == (0, 0), (fps, clock, gaps, dropped)
+
+
+def test_recording_without_ffmpeg(tmp_path, monkeypatch):
+    """ffmpegが見つからない環境では、録画を始めずに知らせるだけで、エミュレータは止まらない"""
+    import imageio_ffmpeg
+
+    from pc1251emu import recorder
+
+    def missing():
+        raise RuntimeError("No ffmpeg exe could be found.")
+
+    monkeypatch.setenv("PC1251_PROGRAMS", str(tmp_path))
+    monkeypatch.setattr(recorder.shutil, "which", lambda name: None)
+    monkeypatch.setattr(imageio_ffmpeg, "get_ffmpeg_exe", missing)
+    app = _app("1251")
+    app.toggle_recording()
+    assert app.recorder is None
+    assert "ffmpegが見つかりません" in app.status
+    app.frame()
+    assert not list(tmp_path.iterdir())
+
+
+def test_recording(tmp_path, monkeypatch):
+    """⇧⌘Rで録画を始めて止めると、置き場所に音つきの動画(1280×720)ができ、
+    長さは録ったフレームの数に合う"""
+    import subprocess
+
+    from pc1251emu import recorder
+
+    monkeypatch.setenv("PC1251_PROGRAMS", str(tmp_path))
+    app = _app("1251")
+    app.toggle_recording()
+    assert app.recorder is not None
+    for _ in range(45):
+        app.frame()
+    app.toggle_recording()
+    assert app.recorder is None
+    files = sorted(tmp_path.glob("rec-*.mp4"))
+    assert len(files) == 1, app.status
+    info = subprocess.run(
+        [recorder.ffmpeg_exe(), "-hide_banner", "-i", str(files[0])],
+        capture_output=True,
+        text=True,
+    ).stderr
+    assert "1280x720" in info and "Audio: aac" in info
+    dur = info.split("Duration: ")[1].split(",")[0]
+    h, mnt, sec = dur.split(":")
+    assert abs(float(sec) - 45 / 30) < 0.15, dur
+    assert not list(tmp_path.glob("*.tmp"))  # 途中のファイルは残らない

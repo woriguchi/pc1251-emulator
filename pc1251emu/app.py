@@ -18,7 +18,7 @@ from types import SimpleNamespace
 import pygame
 import typer
 
-from . import basictext, display, programs, tape
+from . import basictext, display, programs, recorder, tape
 from .audio import RATE, Buzzer, SoundQueue, speed_adjust
 from .keytype import keys_for, keys_for_program
 from .machine import CLOCK, MODELS, PC1251, RomNotFound
@@ -73,6 +73,7 @@ HELP = [
     f"{CMD}K: 矢印キーを数字キーの8・2・4・6にする/戻す(テンキーの代わり。F7でも)",
     '記号(: " ( ) など)は打てばSHIFT付きで入る   Backspace: 1字消す   Delete: CL',
     f"Esc: BRK/ON   {CMD}R: RESET   {CMD}S: 画面保存   {CMD}V: 貼り付け",
+    f"{SHIFT}{CMD}R: 録画を始める/止めて保存(液晶の拡大と本体の動画、音つき。置き場所へ)",
     f"{CMD}T: 速くする   {SHIFT}{CMD}T: 遅くする(1/2倍〜8倍。1倍以外では音の高さも変わる)",
     f"{CMD}E: いまのBASICのプログラムを.basのファイルに書き出す(プログラムの置き場所へ)",
     "ファイルのドロップ: 読み込む   F1〜F7、F9、F10、F12も使える(手引きの表)",
@@ -137,6 +138,15 @@ def load_help_font(size: int) -> pygame.font.Font:
 def _short(path: str) -> str:
     home = os.path.expanduser("~")
     return "~" + path[len(home) :] if path.startswith(home) else path
+
+
+def _version() -> str:
+    from importlib.metadata import PackageNotFoundError, version
+
+    try:
+        return version("pc1251-emu")
+    except PackageNotFoundError:
+        return "?"
 
 
 class Typer:
@@ -338,6 +348,8 @@ class App:
                 self.sound = None
             self.sound_channels = channels
         self.buzzer = Buzzer()
+        self.recorder: recorder.Recorder | None = None  # 録画中なら録画(⇧⌘R)
+        self.rec_buzzer = Buzzer()  # 録画の音を作る(鳴らす音とは別に作る)
         self.pcm_wait = bytearray()  # まだチャンネルに渡していない音
         self.overshoot = 0  # 前のフレームで進みすぎたサイクル
         self.turbo: float = 1  # 速さの倍率(SPEEDSのどれか)
@@ -457,7 +469,7 @@ class App:
         actions = {
             pygame.K_o: self.open_menu,
             pygame.K_t: lambda: self.change_speed(-1 if mods & pygame.KMOD_SHIFT else 1),
-            pygame.K_r: self.press_reset,
+            pygame.K_r: self.toggle_recording if mods & pygame.KMOD_SHIFT else self.press_reset,
             pygame.K_s: self.screenshot,
             pygame.K_e: self.export_program,
             pygame.K_v: self.paste,
@@ -519,6 +531,11 @@ class App:
                 self.toggle_arrows,
             ),
             ("RESETボタンを押す", f"{CMD}R", self.press_reset),
+            (
+                "録画を止めて保存" if self.recorder else "録画を始める",
+                f"{SHIFT}{CMD}R",
+                self.toggle_recording,
+            ),
             ("プログラムをファイルに書き出す", f"{CMD}E", self.export_program),
             ("画面を画像で保存", f"{CMD}S", self.screenshot),
             ("クリップボードから打ち込む", f"{CMD}V", self.paste),
@@ -802,6 +819,67 @@ class App:
         pygame.image.save(self.panel.out, path)
         self.say(f"{_short(path)}に保存しました")
 
+    # ---- 録画 ----
+    def toggle_recording(self) -> None:
+        """録画を始める。録画中なら止めて、置き場所に「rec-日時.mp4」として保存する"""
+        if self.recorder is None:
+            prog = getattr(self, "last_prog", None)
+            title = prog.title if prog else f"SHARP {self.m.model.title}"
+            sub = f"SHARP {self.m.model.title} / pc1251-emu {_version()}"
+            path = os.path.join(programs.user_dir(), f"rec-{time.strftime('%Y%m%d-%H%M%S')}.mp4")
+            try:
+                self.recorder = recorder.Recorder(path, title, sub)
+            except (OSError, ImportError) as e:
+                self.say(f"録画を始められません: {e}", 6)
+                return
+            self.rec_buzzer = Buzzer()
+            self.say(f"録画を始めました。止めて保存するときは、もう一度{SHIFT}{CMD}Rを押します", 4)
+            return
+        rec, self.recorder = self.recorder, None
+        self.say("録画を保存しています…", 2)
+        try:
+            path = rec.close()
+        except OSError as e:
+            self.say(f"録画を保存できません: {e}", 6)
+            return
+        self.say(f"録画を{_short(path)}に保存しました({rec.seconds:.0f}秒)", 6)
+
+    def record_frame(self, surf, c0: int, live: bool) -> None:
+        """1フレームぶんの絵と音を録画に足す。音は鳴らす音と同じ速さの倍率で作る。
+        読み込み中(全速で打ち込んでいるとき)と、時間が進まないとき(電源が切れている)は
+        無音の1フレームにする"""
+        rec = self.recorder
+        assert rec is not None
+        m = self.m
+        if live and m.cpu.cycles != c0:
+            pcm = self.rec_buzzer.render(
+                m.sound_events, c0, m.cpu.cycles, self.turbo, keep_silent=True
+            )
+        else:
+            self.rec_buzzer.hold(m.pc_out >> 4)
+            pcm = bytes(2 * recorder.SPF)
+        rec.add(pygame.image.tobytes(surf, "RGB"), pcm)
+        if rec.error:
+            self.recorder = None
+            rec.abort()
+            self.say(f"録画を止めました: {rec.error}", 6)
+
+    def draw_recording(self, dst) -> None:
+        """録画中であることを窓の右上に出す(録画には入らない)"""
+        rec = self.recorder
+        assert rec is not None
+        sec = int(rec.seconds)
+        font = self._font()
+        label = font.render(f"録画中 {sec // 60}:{sec % 60:02d}", True, (240, 240, 235))
+        w, h = label.get_width() + 34, label.get_height() + 10
+        x, y = dst.get_width() - w - 10, 10
+        box = pygame.Surface((w, h), pygame.SRCALPHA)
+        box.fill((20, 22, 26, 200))
+        dst.blit(box, (x, y))
+        if sec % 2 == 0 or rec.seconds % 1 < 0.5:  # 赤い丸を点滅させる
+            pygame.draw.circle(dst, (225, 50, 45), (x + 15, y + h // 2), 6)
+        dst.blit(label, (x + 26, y + 5))
+
     # ---- 描画の補助 ----
     def draw_help(self, dst) -> None:
         font = self._font()
@@ -1029,6 +1107,8 @@ class App:
         surf = self.panel.draw(
             m.columns(), m.symbols(), m.display_on(), mode, pressed, powered=m.power
         )
+        if self.recorder is not None:
+            self.record_frame(surf, c0, bool(speed) and not typing)
         out = self.window
         if self.scale == 1.0:
             out.blit(surf, (0, 0))
@@ -1046,6 +1126,8 @@ class App:
             self.draw_menu(out)
         if self.popup is not None:
             self.draw_popup(out)
+        if self.recorder is not None:
+            self.draw_recording(out)
         pygame.display.flip()
 
     PREBUFFER = RATE // FPS * 2 * 2  # 2フレームぶん(16ビット)
@@ -1089,6 +1171,8 @@ class App:
                 self.m.power_off()
             os.makedirs(STATE_DIR, exist_ok=True)
             self.m.save_ram(self.ram_file)
+        if self.recorder is not None:
+            self.toggle_recording()  # 録画中に閉じたら、そこまでを保存する
         if self.queue is not None:
             self.queue.close()
         pygame.quit()
@@ -1109,9 +1193,7 @@ app_cli = typer.Typer(add_completion=False, help="SHARP PC-1251/PC-1245エミュ
 
 def _show_version(value: bool) -> None:
     if value:
-        from importlib.metadata import version
-
-        typer.echo(f"pc1251-emu {version('pc1251-emu')}")
+        typer.echo(f"pc1251-emu {_version()}")
         raise typer.Exit()
 
 

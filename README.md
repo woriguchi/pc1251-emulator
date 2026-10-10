@@ -79,9 +79,12 @@ uv run pc1251 --version              # 版を出す(不具合を知らせると�
 | Cmd+T、Shift+Cmd+T | Ctrl+T、Shift+Ctrl+T | 速くする・遅くする(1/2倍、1倍、2倍、4倍、8倍。1倍以外では音の高さも変わる) |
 | Cmd+E | Ctrl+E | いまのBASICのプログラムを.basのファイルに書き出す |
 | Cmd+S | Ctrl+S | 画面を画像で保存 |
+| Shift+Cmd+R | Shift+Ctrl+R | 録画を始める・止めて保存する |
 | Cmd+/ | Ctrl+/ | キーの説明 |
 | Cmd+V | Ctrl+V | クリップボードの文字を打ち込む |
 | Cmd+K | Ctrl+K | 矢印キーを数字キーの8・2・4・6にする/戻す |
+
+Shift+Cmd+R(WindowsはShift+Ctrl+R)で録画を始めると、もう一度押すまでのあいだを、液晶を拡大した絵と本体全体の絵を並べた1280×720の動画(MP4、音つき)に録ります。動画はプログラムの置き場所に`rec-日時.mp4`の名前で保存します。動画を作るのに使うffmpegは、imageio-ffmpegのライブラリと一緒に入ります。imageio-ffmpegがffmpegを一緒に入れるのは、Windows、macOS、Linux(x86_64とaarch64)だけです。ほかの環境でも、エミュレータは入って動きますが、録画するにはffmpegを別に入れてPATHに置いてください。ffmpegが見つからないときは、録画を始めずに画面の下にそのことを出します。
 
 右クリックでも同じ操作のメニューが出ます。メニューの「プログラムの一覧」から見本を選ぶと、そのまま動かせます。日本語入力はオフにしておいてください。
 
@@ -146,7 +149,7 @@ uv run pc1251 --model 1245 primes --run
 | `pc1251emu/tape.py` | カセットの音(wav)の書き出しと読み込み |
 | `doc/manual.pdf` | 使い方の手引き |
 
-命令の意味はMAMEのSC61860の実装に従いました。ただし、資料によって扱いが違う`56h`(READ)、`LOOP`、`WAIT n`は実機のプログラムの書き方に、`CUP`・`CDN`とタイマの印(`TEST 01`・`TEST 02`)はROMのカセットの読み書きに合わせました。`CUP`・`CDN`とタイマの印の扱いは、PockEmulとdigihori氏の[PokecomGO](https://github.com/digihori/pokecom)の実装とも見比べて確かめました。クロックは192kHzです。
+命令の意味はMAMEのSC61860の実装に従いました。ただし、資料によって扱いが違う`56h`(READ)、`LOOP`、`WAIT n`は実機のプログラムの書き方に、`CUP`・`CDN`とタイマの印(`TEST 01`・`TEST 02`)はROMのカセットの読み書きに合わせました。`CUP`・`CDN`とタイマの印の扱いは、PockEmulとdigihori氏の[PokecomGO](https://github.com/digihori/pokecom)の実装とも見比べて確かめました。MAMEが何もしない1バイトの命令として扱う`72h`(資料にない命令LIIH)は、utz82氏の命令表に従って2バイトの命令にしました。PiO 1986年4月号の「走れ!セコイライン」COR版がこの命令を使っています。クロックは192kHzです。
 
 メモリは内部ROMが`0000-1FFF`、BASIC ROMが`4000-7FFF`、RAMが`B800-C7FF`(PC-1245は`C000-C7FF`)、液晶RAMが`F800-F87F`です。液晶RAMの`F800-F8FF`は`F900-FFFF`の256バイトごとにも見え、PC-1245では`E800-EFFF`にも見えます。機種ごとの違いは`machine.py`の`MODELS`の表にまとめ、絵は`pc1251emu/assets/`(PC-1245は`assets/pc1245/`)にあります。
 

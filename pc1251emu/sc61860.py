@@ -16,6 +16,10 @@
   決めた件数)。PC-1350の機械語マニュアルの値。MAMEはそれぞれ7、9、3。
 * ANID・ORID・TSID: (R-1)を一時的な置き場に使う(同じマニュアル)。書く値は
   書き換える前の(DP)にした(utz82の表)。MAMEは書かない。
+* 72h・73h・76h・77h(LIIH n、資料にない命令): 2バイト命令で、I=H、H=n、Zを0にする
+  (utz82の表)。Hレジスタはほかの命令でも書き換わるとされるが、ここではLIIHが
+  書いた値だけを覚える。MAMEは1バイトで何もしない。PiO 1986年4月号の
+  「走れ!セコイライン」COR版が「72 00 72 00」をI=0の意味で使っている。
 
 それ以外のサイクル数はMAMEの値を使う。
 """
@@ -107,6 +111,7 @@ class SC61860:
         self.p = self.q = self.r = 0
         self.c = self.z = 0
         self.h = 0  # PTCで積む件数
+        self.hreg = 0  # LIIHが読み書きするHレジスタ
         self.cycles = 0
 
     # ---- 補助 ----
@@ -999,6 +1004,15 @@ class SC61860:
             def f():
                 s.q = CP
                 bus.out_c(ram[CP])
+                return 2
+
+            return f
+        if op in (0x72, 0x73, 0x76, 0x77):  # LIIH n
+
+            def f():
+                ram[I] = s.hreg
+                s.hreg = s._fetch()
+                s.z = 0
                 return 2
 
             return f

@@ -77,11 +77,14 @@ Click the keys on screen with the mouse. Letters, digits, symbols, Enter, Space 
 | Cmd+T, Shift+Cmd+T | Ctrl+T, Shift+Ctrl+T | faster / slower (½×, 1×, 2×, 4×, 8×; away from 1× the pitch of the sound changes too) |
 | Cmd+E | Ctrl+E | export the BASIC program in memory to a .bas file |
 | Cmd+S | Ctrl+S | save a screenshot |
+| Shift+Cmd+R | Shift+Ctrl+R | start recording / stop and save the video |
 | Cmd+/ | Ctrl+/ | key help |
 | Cmd+V | Ctrl+V | type the clipboard text in |
 | Cmd+K | Ctrl+K | make the arrow keys press 8, 2, 4, 6 on the keypad, or back |
 
 On a PC without a numeric keypad, games that use 8, 2, 4 and 6 (up, down, left and right around 5) are easier with Cmd+K (Ctrl+K on Windows, or F7): the arrow keys then press those number keys. Press it again to switch back, or start with `--numpad`.
+
+Shift+Cmd+R (Shift+Ctrl+R on Windows) starts recording; pressing it again stops and saves a 1280×720 MP4 video with sound, showing an enlarged LCD above the whole calculator, as `rec-<date>-<time>.mp4` in the program folder. The ffmpeg used to make the video comes with the imageio-ffmpeg library, which bundles it only for Windows, macOS and Linux (x86_64 and aarch64). Elsewhere the emulator still installs and runs, but recording needs an ffmpeg on the PATH; without one, the emulator says so at the bottom of the window instead of recording.
 
 Right-click opens a menu with the same actions. Its first item opens the program list, so you can pick a sample and run it straight away. Turn off Japanese input before typing.
 
@@ -142,7 +145,7 @@ The key positions are the same as on the PC-1251. Apart from DEG, which is visib
 | `pc1251emu/tape.py` | writing and reading cassette audio (wav) |
 | `doc/manual.pdf` | the user guide (in Japanese) |
 
-Instruction semantics follow MAME's SC61860 implementation, except for `56h` (READ), `LOOP` and `WAIT n`, which sources describe differently and where I followed how real programs use them, and `CUP`/`CDN` and the timer flags (`TEST 01`/`TEST 02`), which follow what the ROM's cassette routines need. For `CUP`/`CDN` and the timer flags I also checked against PockEmul and digihori's [PokecomGO](https://github.com/digihori/pokecom). The clock is 192 kHz.
+Instruction semantics follow MAME's SC61860 implementation, except for `56h` (READ), `LOOP` and `WAIT n`, which sources describe differently and where I followed how real programs use them, and `CUP`/`CDN` and the timer flags (`TEST 01`/`TEST 02`), which follow what the ROM's cassette routines need. For `CUP`/`CDN` and the timer flags I also checked against PockEmul and digihori's [PokecomGO](https://github.com/digihori/pokecom). The undocumented opcode `72h` (LIIH), which MAME treats as a one-byte no-op, is a two-byte instruction here, following utz82's instruction table; the COR version of "Hashire! Sekoiline" (PiO, April 1986) relies on it. The clock is 192 kHz.
 
 The memory map is: internal ROM at `0000-1FFF`, BASIC ROM at `4000-7FFF`, RAM at `B800-C7FF` (`C000-C7FF` on the PC-1245) and LCD RAM at `F800-F87F`. The LCD RAM `F800-F8FF` also appears in every 256-byte block of `F900-FFFF`, and on the PC-1245 in `E800-EFFF` as well.
 
