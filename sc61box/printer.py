@@ -1,4 +1,4 @@
-"""プリンタ(PC-1251・PC-1245はCE-125、PC-1261・PC-1350はCE-126Pにあたるもの)
+"""プリンタ(CE-126Pにあたるもの。どの機種にもつながる)
 
 本体は11ピンの端子から、1バイトを下位のビットから1ビットずつ送る。データの線にビットを
 出してから合図の線を上げ、プリンタが応答の線(INBのビット6)を動かすのを待つ。
@@ -86,8 +86,9 @@ def load_font(path: str = FONT_FILE) -> dict[int, bytes]:
 # PC-1350は数字の0をF0(斜線のある0)で、英字のOを30で送る。PC-1350につなぐプリンタは
 # 30を斜線のない形で打つと考え、30はOとして扱う
 SWAP_1350 = {0x30: 0x4F}
-# PC-1350は行の頭ごとに、字のコードと同じ送り方で0F(最初の行)か0E(次の行から)を1つ送る。
-# 字ではないので、行の最初のバイトがこれなら打たない(2つ目からは字として打つ)
+# PC-1350は行の頭ごとに、字のコードと同じ送り方で0F(最初の行)か0E(次の行から)を送る。
+# 印字モード(SHIFT+ENTER)では、行の終わり(0Dのあと)にも0Eを送るので、次の行の頭には0Eと0Fが
+# 続く。字ではないので、行の頭に続くあいだは打たない(行の途中なら字として打つ)
 LEAD_1350 = frozenset((0x0E, 0x0F))
 # PC-1251・PC-1245のLLISTは、プログラムの行を打ち終わるごとに03を1つ送る。これも同じに扱う
 LEAD_1251 = frozenset((0x03,))
@@ -103,7 +104,7 @@ class Printer:
         self.line = bytearray()  # 印字している途中の行
         self.count = 0  # 印字し終わった行の数(消したあとも数える)
         self.changes = 0  # 印字が変わった回数(字を打つか改行するたびに増える)
-        self.at_start = True  # 次のバイトが行の最初のバイトか(leadのコードなら打たない)
+        self.at_start = True  # まだ行の字を受け取っていないか(leadのコードなら打たない)
         self._bits = 0
         self._n = 0
 
@@ -129,10 +130,11 @@ class Printer:
             self.changes += 1
             self.at_start = True
             return
-        first, self.at_start = self.at_start, False
-        if not (first and code in self.lead):
-            self.line.append(self.swap.get(code, code))
-            self.changes += 1
+        if self.at_start and code in self.lead:
+            return
+        self.at_start = False
+        self.line.append(self.swap.get(code, code))
+        self.changes += 1
 
     def rows(self) -> list[bytes]:
         """印字した行(途中の行も、空白でなければ含める)"""

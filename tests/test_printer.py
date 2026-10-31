@@ -7,7 +7,8 @@ import pytest
 from helpers import boot, finish, make_app, settle, typ
 
 from sc61box import programs
-from sc61box.app import BAR_H
+from sc61box.app import BAR_H, FPS
+from sc61box.audio import PRINT_CATCH_UP, PRINT_GAP, PRINT_LINE
 from sc61box.machine import CLOCK
 
 
@@ -85,6 +86,201 @@ def test_paper_appears_when_printing(tmp_path, monkeypatch):
     app.close()
 
 
+def test_printer_sound_while_paper_moves():
+    """紙が動いているあいだだけプリンタの音が出て、止まると消える。本体の音(空なら無音)に
+    足したサンプルになる"""
+    from array import array
+
+    from sc61box.audio import FRAME_SAMPLES, PrinterSound
+
+    snd = PrinterSound()
+    assert snd.mix(b"", False) == b""
+    for _ in range(3):
+        pcm = snd.mix(b"", True)
+    assert len(pcm) == 2 * FRAME_SAMPLES and max(abs(v) for v in array("h", pcm)) > 500
+    for _ in range(30):  # 止めてから1秒で鳴りやむ
+        pcm = snd.mix(bytes(2 * FRAME_SAMPLES), False)
+    assert not snd.active and max(abs(v) for v in array("h", pcm)) == 0
+
+
+class _Ear:
+    """音の出力先の代わり。渡されたサンプルをためる"""
+
+    keep_silent = False
+
+    def __init__(self) -> None:
+        self.pcm: list[bytes] = []
+
+    def level(self) -> int:
+        from sc61box.audio import TARGET
+
+        return TARGET
+
+    def push(self, pcm: bytes) -> None:
+        self.pcm.append(pcm)
+
+    def clear(self) -> None:
+        pass
+
+    def close(self) -> None:
+        pass
+
+
+def test_app_sounds_printer_on_new_lines(tmp_path, monkeypatch):
+    """印字が出て紙が送られるあいだ、スピーカーにプリンタの音が入る"""
+    from array import array
+
+    monkeypatch.setenv("SC61BOX_PROGRAMS", str(tmp_path))
+    app = make_app(frames=3)
+    ear = _Ear()
+    app.speaker = ear  # pyrefly: ignore
+    printer = app.m.printer
+    assert printer is not None
+    for _ in range(5):
+        app.frame()
+    assert all(not p or max(abs(v) for v in array("h", p)) == 0 for p in ear.pcm)
+    printer.put(0x41)
+    printer.put(0x0D)
+    for _ in range(10):
+        app.frame()
+    assert app.paper_open and any(p and max(abs(v) for v in array("h", p)) > 500 for p in ear.pcm)
+    app.close()
+
+
+def test_lines_come_out_at_printer_speed(tmp_path, monkeypatch):
+    """印字した行は、実機と同じ速さで1行ずつ紙に出る(1行の印字と、次の行までの間)。
+    改行していない途中の行は出さない。紙をしまうと、出ていない行は次の紙に出さない"""
+    monkeypatch.setenv("SC61BOX_PROGRAMS", str(tmp_path))
+    app = make_app(frames=3)
+    printer = app.m.printer
+    assert printer is not None
+    for code in b"ONE\rTWO\rTHREE\rFOU":
+        printer.put(code)
+    app.frame()
+    assert app.paper_rows() == [b"ONE"] and app.paper.moving
+    per_line = round((PRINT_LINE + PRINT_GAP) * FPS)
+    for _ in range(per_line):
+        app.frame()
+    assert app.paper_rows() == [b"ONE", b"TWO"]
+    for _ in range(per_line):
+        app.frame()
+    assert app.paper_rows() == [b"ONE", b"TWO", b"THREE"]  # 途中の行FOUは出さない
+    assert app.printout is not None and app.printout.rows() == [b"ONE", b"TWO", b"THREE", b"FOU"]
+    printer.put(0x0D)
+    for code in b"FIVE\rSIX\r":
+        printer.put(code)
+    app.frame()
+    assert app.paper_rows() == [b"ONE", b"TWO", b"THREE"]  # 4行目はまだ送り出していない
+    app.close_paper()
+    assert not app.paper.moving and app.paper_rows() == []
+    printer.put(0x41)
+    printer.put(0x0D)
+    for _ in range(2):
+        app.frame()
+    assert app.paper_rows() == [b"A"]  # 前の紙の残りは出さない
+    app.close()
+
+
+def test_paper_follows_speed(tmp_path, monkeypatch):
+    """速さの設定を2倍にすると、紙に行が出る速さとプリンタの音の速さも2倍になる"""
+    monkeypatch.setenv("SC61BOX_PROGRAMS", str(tmp_path))
+    app = make_app(frames=3)
+    app.turbo = 2
+    printer = app.m.printer
+    assert printer is not None
+    for code in b"ONE\rTWO\r":
+        printer.put(code)
+    app.frame()
+    assert app.paper_rows() == [b"ONE"] and app.print_rate == 2
+    per_line = round((PRINT_LINE + PRINT_GAP) / 2 * FPS)
+    for _ in range(per_line - 1):
+        app.frame()
+    assert app.paper_rows() == [b"ONE"]
+    app.frame()
+    assert app.paper_rows() == [b"ONE", b"TWO"]
+    app.close()
+
+
+def test_backlog_catches_up(tmp_path, monkeypatch):
+    """出していない行がPRINT_KEEPより多いと、PRINT_CATCH_UP秒で出し切る速さに上げ、出し切る
+    までその速さを保つ。1フレームに1行より速ければ、何行かまとめて出す。出し切ったあとの短い
+    印字は実機の速さに戻る"""
+    monkeypatch.setenv("SC61BOX_PROGRAMS", str(tmp_path))
+    app = make_app(frames=3)
+    printer = app.m.printer
+    assert printer is not None
+    rows = [b"L%03d" % i for i in range(120)]
+    for row in rows:
+        for code in row + b"\r":
+            printer.put(code)
+    app.frame()
+    assert 1 < len(app.paper_rows()) < len(rows) and app.print_rate > 1
+    for _ in range(round(PRINT_CATCH_UP * FPS)):
+        app.frame()
+    assert app.paper_rows() == rows
+    for _ in range(FPS):
+        app.frame()
+    for code in b"A\rB\r":
+        printer.put(code)
+    app.frame()
+    assert app.paper_rows()[-1] == b"A" and app.print_rate == 1
+    for _ in range(round((PRINT_LINE + PRINT_GAP) * FPS) - 1):
+        app.frame()
+    assert app.paper_rows()[-1] == b"A"
+    app.close()
+
+
+def test_fast_printing_sounds_and_shows_lines(tmp_path, monkeypatch):
+    """何行かまとめて出すほど速くても、紙が動くフレームにはプリンタの音が入り、紙送りは1行
+    ぶんまでなので、紙に出した行が紙の外へずれて見えなくなることはない"""
+    from array import array
+
+    monkeypatch.setenv("SC61BOX_PROGRAMS", str(tmp_path))
+    app = make_app(frames=3)
+    ear = _Ear()
+    app.speaker = ear  # pyrefly: ignore
+    printer = app.m.printer
+    assert printer is not None
+    for i in range(400):
+        for code in b"L%03d\r" % i:
+            printer.put(code)
+    app.frame()
+    line = app.paper.DOT * app.paper.LINE
+    for _ in range(40):
+        app.frame()
+        assert app.paper.feed <= line
+    loud = [bool(p) and max(abs(v) for v in array("h", p)) > 500 for p in ear.pcm[-40:]]
+    assert 2 < len(app.paper_rows()) < 400 and sum(loud) >= 38
+    app.close()
+
+
+def test_printer_sound_steps_faster():
+    """紙送りが速いと、プリンタの音のステップの間隔がその分だけ縮む"""
+    from sc61box.audio import PrinterSound
+
+    class Steps:
+        """ステップを数える乱数の代わり(ステップごとにrandintを1回呼ぶ)"""
+
+        def __init__(self) -> None:
+            self.n = 0
+
+        def randint(self, _a: int, _b: int) -> int:
+            self.n += 1
+            return 0
+
+        def random(self) -> float:
+            return 0.5
+
+    counts = []
+    for speed in (1, 4):
+        snd, steps = PrinterSound(), Steps()
+        snd.rng = steps  # pyrefly: ignore
+        for _ in range(30):
+            snd.mix(b"", True, speed)
+        counts.append(steps.n)
+    assert 140 <= counts[0] <= 150 and abs(counts[1] - 4 * counts[0]) <= 10  # 1秒に147ステップ
+
+
 def test_printer_font():
     """紙に打つ字の形はプリンタの字の表から取る。00〜FFのすべてに形があり、本体のROMに
     よらない"""
@@ -109,16 +305,31 @@ def test_raw_codes_printed():
 
 
 def test_pc1350_line_lead_and_letter_o():
-    """PC-1350は行の頭ごとに0Fか0Eを1つ送り、英字のOを30で送る。行の最初のバイトの0F・0Eは
-    打たず、2つ目からは字(θ、⇒)として打つ。30はOの形で打つ"""
+    """PC-1350は行の頭ごとに0Fか0Eを送り、英字のOを30で送る。行の頭に続く0F・0Eは打たず
+    (印字モードでは行の終わりにも0Eが来て、次の行の頭で0Eと0Fが続く)、行の途中なら字(θ、⇒)
+    として打つ。30はOの形で打つ"""
     m, _ = boot("1350")
     m.connect_printer()
     p = m.printer
     assert p is not None
-    for code in b"\x0fO\x30\xf0\r\x0e\x0eA\x0f\r":
+    for code in b"\x0fO\x30\xf0\r\x0e\x0e\x0fA\x0f\x0eB\r":
         for i in range(8):  # 本体と同じく、1ビットずつ字として送る
             p.bit(code >> i, command=False)
-    assert p.lines == [b"OO\xf0", b"\x0eA\x0f"] and p.text() == "OO0\nθA⇒\n"
+    assert p.lines == [b"OO\xf0", b"A\x0f\x0eB"] and p.text() == "OO0\nA⇒θB\n"
+
+
+def test_pc1350_print_mode_lines():
+    """PC-1350の印字モード(SHIFT+ENTER)では、打った式と答えの行が印字される。ROMが行の頭と
+    終わりに送る0F・0Eを字として打たない"""
+    m, t = boot("1350")
+    m.connect_printer()
+    t.add_keys([["SHIFT"], ["ENTER"]])
+    finish(m, t)
+    m.run(CLOCK // 2)
+    typ(m, t, "1+2\n", wait=1)
+    typ(m, t, "3*4\n", wait=1)
+    assert m.printer is not None
+    assert m.printer.text() == "1+2\n                      3.\n3*4\n                     12.\n"
 
 
 def test_exponent_mark_1251():

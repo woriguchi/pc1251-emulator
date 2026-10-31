@@ -73,14 +73,6 @@ uv run sc61box --help          # オプションの一覧
 uv run python tools/asm61860.py vline.asm vline.hex
 ```
 
-## 試験
-
-```sh
-uv run pytest -q tests
-```
-
-ROMがなければ、ROMを使う試験は飛ばします。
-
 ## 開発について
 
 このエミュレータの作成にはAnthropicのClaudeを利用しています。

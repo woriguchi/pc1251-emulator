@@ -4,7 +4,7 @@ PC-1251の配置はMAMEとPockEmulの実装、ポートのビットはPOPCOM 198
 
     0000-1FFF  内部ROM(8KB)
     4000-7FFF  BASIC ROM(16KB)
-    B800-C7FF  RAM(4KB)。B000-B7FFはB800-BFFFの鏡
+    B800-C7FF  RAM(4KB)。B000-B7FFはB800-BFFFのミラー
     F800-F87F  液晶RAM。F900-FFFFの各256バイトにも同じものが見える
 
 PC-1245は同じつくりで、RAMがC000-C7FFの2KB、液晶が16桁、モードスイッチにRSVの段がない。
@@ -15,11 +15,11 @@ PC-1260/1261/1262の配置は次のとおり。キー、モードスイッチ、
     0000-1FFF  内部ROM(8KB)
     2000-20FF  液晶RAM(左の12桁)。2000-203Bが1行目、2040-207Bが2行目。
                203C-203Fと207C-207Fに表示記号のビット。2080-20FFはROMの作業域
-    2800-28FF  液晶RAM(右の12桁)。並びは2000-20FFと同じ。2880-28FFは式の計算の積み上げ
+    2800-28FF  液晶RAM(右の12桁)。並びは2000-20FFと同じ。2880-28FFは式の計算のスタック
     4000-67FF  RAM(PC-1261・1262は10KB、PC-1260は5800-67FFの4KB)。6600-67FFはBASICの作業域
     8000-FFFF  BASIC ROM(32KB)
 
-PC-1260/1261/1262の水晶は768kHz(PC-1251は576kHz)。ROMのテープを読む手続きの待ちの回数が
+PC-1260/1261/1262の水晶は768kHz(PC-1251は576kHz)。ROMのテープを読むルーチンの待ちの回数が
 PC-1251の約4/3倍で、576kHzとして動かすとROMが自分で書いたテープを読めない。
 PC-1350はクラスPC1350(このファイルの後半)。
 """
@@ -112,7 +112,9 @@ SYMBOLS = {
 }
 
 
-# PC-1260/1261/1262の表示記号。GRAD(207Cのビット2)の記号は液晶にない。
+# PC-1260/1261/1262の表示記号。GRAD(207Cのビット2)の記号は液晶にない。207Cのビット6は、
+# 筐体に字のない横棒(ERRORの右)を点ける(POKE &207C,&40で確かめられた。HIDDEN)。ROMは
+# このビットを立てず、電源を入れたときに消す(内部ROMの080B〜080C)。
 # SHIFT+8(内部ROMの11FD〜122A)は、203Cのビット7が1ならカナの入力(KANA)を、0なら英小文字の
 # 入力(SMALL)を切り替える。ビット7は電源を入れたときに1になり(1927、INBのビット3が0のとき)、
 # POKE &203C,PEEK &203C AND &7Fで0にすると英小文字を打てる
@@ -126,6 +128,7 @@ SYMBOLS_1261 = {
     "DEG": (0x207C, 0x01),
     "RAD": (0x207C, 0x02),
     "ERROR": (0x207C, 0x20),
+    "HIDDEN": (0x207C, 0x40),
 }
 
 
@@ -142,8 +145,8 @@ class Model:
     name: str  # --modelで選ぶ名前("1251")
     title: str  # "PC-1251"
     ram: tuple[int, int]  # RAMの範囲(終わりは含まない)
-    mirror: tuple[int, int, int] | None  # RAMの鏡(始め, 終わり, 足す数)。足した番地と同じもの
-    # 液晶RAMの鏡になる256バイトの区画の頭。同じ2KBの中にある液晶RAMが見える。
+    mirror: tuple[int, int, int] | None  # RAMのミラー(始め, 終わり, 足す数)。足した番地と同じもの
+    # 液晶RAMのミラーになる256バイトの区画の頭。同じ2KBの中にある液晶RAMが見える。
     # 同じ2KBの中になければ、最初の液晶RAM
     lcd_mirrors: tuple[int, ...]
     cells: int  # 液晶の1行の桁数
@@ -228,9 +231,9 @@ for _name, _lo in (("1250", 0xC000), ("1255", 0xA000)):
         name=_name,
         title=f"PC-{_name}",
         ram=(_lo, 0xC800),
-        # PC-1255の8000-9FFFはA000-BFFFの鏡とした。ROMは起動のときに、RAMの頭を下へ探しながら
-        # 書いた印が上の区画に写るかを見ていて、鏡がないと8000からRAMがあるとみる
-        # (鏡があるとMEMが9630になり、カタログの値と合う)
+        # PC-1255の8000-9FFFはA000-BFFFのミラーとした。ROMは起動のときに、RAMの頭を下へ探しながら
+        # 書いた印が上の区画に写るかを見ていて、ミラーがないと8000からRAMがあるとみる
+        # (ミラーがあるとMEMが9630になり、カタログの値と合う)
         mirror=(0x8000, 0xA000, 0x2000) if _name == "1255" else None,
         prog_start=_lo + 0x30,
         rom="1251",
@@ -261,6 +264,20 @@ MODELS["1350"] = Model(
 
 # RAMの範囲だけが違う機種(PC-1250・1255、PC-1260・1262)と、そのROMと絵を持つ元の機種
 BASE_MODEL = {name: m.base for name, m in MODELS.items() if m.base}
+
+
+def ram_span(model: Model, top: int | None) -> tuple[int, int]:
+    """RAMの範囲。topはプログラムの# ram: で広げる終わり(含まない)。機種のRAMの終わりより
+    下には狭めず、広げる先にROMか液晶RAM(そのミラーも)があれば広げない"""
+    lo, hi = model.ram
+    if top is None or top <= hi:
+        return lo, hi
+    top = min(top, 0x10000)
+    taken = [(0, 0x2000), (model.bas_addr, model.bas_addr + model.bas_size), *model.lcd]
+    taken += [(a, a + 0x100) for a in model.lcd_mirrors]
+    if any(a < top and hi < b for a, b in taken):
+        return lo, hi
+    return lo, top
 
 
 class RomNotFound(FileNotFoundError):
@@ -361,7 +378,8 @@ class PC1251(Bus):
             for a in range(lo, hi):
                 self.wmask[a] = 1
             self._lcd_ram[lo >> 8] = 1
-        self._lcd_page = bytearray(256)  # 上位バイトごとに、液晶RAMの鏡なら見える区画の上位バイト
+        # 上位バイトごとに、液晶RAMのミラーなら見える区画の上位バイト
+        self._lcd_page = bytearray(256)
         for a in self.model.lcd_mirrors:
             same = [lo for lo, _ in self.model.lcd if lo & 0xF800 == a & 0xF800]
             self._lcd_page[a >> 8] = (same or [self.model.lcd[0][0]])[0] >> 8
@@ -400,6 +418,32 @@ class PC1251(Bus):
     def power_on(self) -> None:
         """電源を入れる(PC-1350では電源スイッチをONにする)"""
         self.wake()
+
+    # ---- RAMの終わりを動かす(プログラムの# ram:) ----
+    def _unused(self, a: int) -> int:
+        """何もつながっていない番地を読んだときの値"""
+        return a >> 8 if self.model.lines == 2 else 0
+
+    def ram_top(self, top: int | None) -> int:
+        """# ram: の終わりtopから、動かす先のRAMの終わり(含まない)。機種の既定より下には
+        狭めず、Noneは既定"""
+        base = MODELS[self.model.name].ram[1]
+        return base if top is None else min(max(top, base), 0x10000)
+
+    def ram_top_ok(self, top: int | None) -> bool:
+        """RAMの終わり(含まない)をtopに動かせるか(ram_span)"""
+        want = self.ram_top(top)
+        return ram_span(replace(self.model, ram=MODELS[self.model.name].ram), want)[1] == want
+
+    def set_ram_top(self, top: int | None) -> None:
+        """RAMの終わりをtopに動かす(先にram_top_okで確かめる)。広げた所は0にし、狭めて外した
+        所はつながっていない番地に戻す"""
+        lo, hi = self.model.ram
+        top = self.ram_top(top)
+        for a in range(min(hi, top), max(hi, top)):
+            self.wmask[a] = 1 if top > hi else 0
+            self.mem[a] = 0 if top > hi else self._unused(a)
+        self.model = replace(self.model, ram=(lo, top))
 
     # ---- バス ----
     def read(self, a: int) -> int:
@@ -492,8 +536,8 @@ class PC1251(Bus):
     def out_c(self, v: int) -> None:
         old = self.pc_out
         self.pc_out = v
-        if v & 0x02:  # カウンタのリセット。立っているタイマの印も消す(リセットからTEST命令で
-            # 512msを待つプログラムが、前に立ったままの印で待たずに抜けないように)
+        if v & 0x02:  # カウンタのリセット。立っているタイマのフラグも消す(リセットからTEST命令で
+            # 512msを待つプログラムが、前に立ったままのフラグで待たずに抜けないように)
             self.t2 = 0
             self.t512cnt = 0
             self.t512 = self.t2ms = 0
@@ -512,7 +556,7 @@ class PC1251(Bus):
         return tape.level(cycle) if tape is not None else 0
 
     def test(self, n: int) -> int:
-        """TEST命令。タイマの印(ビット0が512ms、ビット1が2ms)は間隔ごとに立ち、読むと消える"""
+        """TEST命令。タイマのフラグ(ビット0が512ms、ビット1が2ms)は間隔ごとに立ち、読むと消える"""
         t = self.test_bits() & n
         if t & 0x01:
             self.t512 = 0
@@ -566,7 +610,7 @@ class PC1251(Bus):
         return False
 
     def _tick(self, used: int) -> None:
-        """タイマをusedサイクル進める(2msごとに印を立て、256回ごとに512msの印を立てる)"""
+        """タイマをusedサイクル進める(2msごとにフラグを立て、256回ごとに512msのフラグを立てる)"""
         self.t2 += used
         while self.t2 >= TICK_2MS:
             self.t2 -= TICK_2MS
@@ -719,7 +763,11 @@ class PC1251(Bus):
         if not isinstance(state, dict) or state.get("format") != self.STATE_FORMAT:
             raise ValueError(tr("状態のファイルとして読めません"))
         key = self._state_key()
-        if {k: state.get(k) for k in key} != key:
+        got = {k: state.get(k) for k in key}
+        ram, want = got.pop("ram"), key.pop("ram")
+        # RAMの終わりは保存したときのものに動かす(# ram: のプログラムを読み込む前に戻すなど)
+        top = ram[1] if isinstance(ram, list) and len(ram) == 2 and ram[0] == want[0] else None
+        if got != key or type(top) is not int or not self.ram_top_ok(top):
             raise ValueError(tr("ほかの機種(PC-{model})の状態です", model=state.get("model")))
         if "rom" in state and state["rom"] != self._rom_digest():
             raise ValueError(tr("ROMが保存したときと違います"))
@@ -735,6 +783,7 @@ class PC1251(Bus):
         values = {name: self._check_field(name, fields.get(name)) for name in self.STATE_FIELDS}
         cpu = self.cpu.check_state(state.get("cpu"))
         # ここから先は失敗しない
+        self.set_ram_top(top)
         for lo, hi in self._writable_ranges():
             self.mem[lo:hi] = mem[lo:hi]
         for name, v in values.items():
@@ -868,6 +917,9 @@ KEYS_1350 = {
 KEYS_1350["SHIFT2"] = KEYS_1350["SHIFT"]  # 右上のSHIFTも同じ線とした
 
 # 液晶の左端の表示記号(783Cのビット)
+# PC-1350の表示記号(783C)。ビット2は印字モード(SHIFT+ENTERのP↔NP)の印だが、液晶に記号は
+# ない(ht-deko.comのPC-1350の頁も「モードを示すシンボルがない」としている)。787Cのビット0〜2
+# (DEGREE・RADIAN・GRAD)も同じで、液晶に記号はない
 SYMBOLS_1350 = {
     "SHIFT": (0x783C, 0x01),
     "DEF": (0x783C, 0x02),
@@ -998,13 +1050,13 @@ class PC1350(PC1251):
             return False
         return super().run(cycles, guard, seen)
 
-    # ROMの電源を切る手続き。内部RAMの20hに5A、21h〜27hにA5の印を書いてから電源を切る
+    # ROMの電源を切るルーチン。内部RAMの20hに5A、21h〜27hにA5の印を書いてから電源を切る
     OFF_ROUTINE = 0x04BF
     OFF_ROUTINE_CODE = bytes.fromhex("f4eef4ad")
 
     def power_off(self, limit: float = 1.0) -> bool:
-        """電源スイッチをOFFにする。プログラムが残るように、ROMの電源を切る手続きを走らせる
-        (スイッチがROMに知らせる仕組みは再現していない)。手続きが見つからなければ印だけ書く"""
+        """電源スイッチをOFFにする。プログラムが残るように、ROMの電源を切るルーチンを走らせる
+        (スイッチがROMに知らせる仕組みは再現していない)。ルーチンが見つからなければ印だけ書く"""
         cpu = self.cpu
         if self.power:
             if bytes(self.mem[self.OFF_ROUTINE : self.OFF_ROUTINE + 4]) == self.OFF_ROUTINE_CODE:

@@ -73,6 +73,47 @@ def _button(kind, button, iid=1):
     return _event(kind, instance_id=iid, button=button)
 
 
+class _Stub:
+    """attached()だけを持つコントローラの代わり"""
+
+    def __init__(self, attached: bool) -> None:
+        self._attached = attached
+
+    def attached(self) -> bool:
+        return self._attached
+
+
+def test_pads_sync_releases_detached():
+    """pygame.event.get()が失敗して、外したイベントを受け取れなかったパッドは、syncで閉じて
+    押していた入力を離す。つながっているパッドはそのまま"""
+    pads = gamepad.Pads()
+    pads.devices[3], pads.devices[4] = _Stub(False), _Stub(True)  # pyrefly: ignore
+    pads.handle(_button(pygame.CONTROLLERBUTTONDOWN, pygame.CONTROLLER_BUTTON_A, iid=3))
+    pads.handle(_button(pygame.CONTROLLERBUTTONDOWN, pygame.CONTROLLER_BUTTON_B, iid=4))
+    assert pads.sync() == [("a", 3, False)]
+    assert list(pads.devices) == [4] and pads.held == {(4, "b"): {"button"}}
+
+
+def test_run_survives_event_get_failure():
+    """pygame.event.get()がKeyErrorで失敗しても(pygame/pygame#3634)落ちず、その回に外れた
+    パッドが押していたキーを離す"""
+    app = make_app()
+    app.pads.devices[3] = _Stub(False)  # pyrefly: ignore
+    app.pad_event(_button(pygame.CONTROLLERBUTTONDOWN, pygame.CONTROLLER_BUTTON_A, iid=3))
+    assert "SPC" in app.typer.physical
+    answers = iter([KeyError(1), [_event(pygame.QUIT)]])  # 2回目で閉じる。あとは空
+
+    def get():
+        answer = next(answers, [])
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    with patch("pygame.event.get", side_effect=get):
+        app.run()
+    assert "SPC" not in app.typer.physical and not app.pads.devices
+
+
 def test_pads_buttons_and_axes():
     pads = gamepad.Pads()
     down = _event(pygame.CONTROLLERBUTTONDOWN, instance_id=3, button=pygame.CONTROLLER_BUTTON_A)

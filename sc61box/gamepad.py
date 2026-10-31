@@ -145,7 +145,8 @@ class Pads:
         self.axis_on: dict[tuple[int, int], str] = {}  # (instance_id, 軸): 倒している向きの入力
         try:
             controller.init()
-            controller.set_eventstate(True)
+            if hasattr(controller, "set_eventstate"):  # pygame-ceはinit()で有効になる
+                controller.set_eventstate(True)
             for i in range(controller.get_count()):
                 self._open(i)
         except pygame.error:
@@ -238,3 +239,20 @@ class Pads:
     def release_all(self) -> list[tuple[str, int, bool]]:
         """押している入力をすべて離す(割り当てを変える前など)"""
         return self._release(lambda _iid: True)
+
+    def sync(self) -> list[tuple[str, int, bool]]:
+        """外れたのにイベントが来なかったパッドを閉じ、押していた入力を離す。pygame 2.6までは、
+        つないだときのイベントを取り出す前に外れたパッド(Joy-Conを2つつないで1つにまとめた
+        ときなど)でpygame.event.get()がKeyErrorになり(pygame/pygame#3634)、その回の
+        イベントが失われる"""
+        gone = []
+        for iid, c in self.devices.items():
+            try:
+                attached = c.attached()
+            except pygame.error:
+                attached = False
+            if not attached:
+                gone.append(iid)
+        for iid in gone:
+            del self.devices[iid]
+        return self._release(lambda iid: iid in gone)

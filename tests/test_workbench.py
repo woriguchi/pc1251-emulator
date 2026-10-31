@@ -895,7 +895,7 @@ def test_undo_shortcut_and_menu():
 
 
 def test_undo_paste_through_ram_mirror():
-    """同じRAMを指す鏡の番地(PC-1251のB000〜B7FFはB800〜BFFF)を1回で貼り付けても、
+    """同じRAMを指すミラーの番地(PC-1251のB000〜B7FFはB800〜BFFF)を1回で貼り付けても、
     取り消すと貼り付ける前の値と書いた印に戻る"""
     m, b = bench()
     b.paste("B800 11\nB000 22\n")
@@ -1114,7 +1114,7 @@ def test_paste_into_start_field(monkeypatch):
 
 
 def test_counter_reset_clears_timer_flags():
-    """OUTCでカウンタをリセットすると、立ったままのタイマの印も消える。リセットのあとTEST 01で
+    """OUTCでカウンタをリセットすると、立ったままのタイマのフラグも消える。リセットのあとTEST 01で
     512msを待つプログラム(押し続けたキーの繰り返しまでの待ちなど)が、前に立った印で
     すぐに抜けない"""
     from sc61box.machine import TICK_2MS
@@ -1168,3 +1168,221 @@ def test_lcd_duty_from_real_writes():
     assert 0 < share[0] < 0.03 and share[7] == 0
     assert app.panel.level[0][0] < 0.05
     app.close()
+
+
+def test_tab_jumps_to_typed_address():
+    """Tabで番地の欄へ移り、4桁打つとその番地の行へ飛ぶ(メモリは書き換えない)。説明にも出す"""
+    app = make_app(scale=0.5, frames=2, norom=True)
+    b, v = app.bench, app.bench_view
+    assert b is not None and v is not None
+    _type(app, "C000 37")
+    assert "Tab" in v.hint()
+    _key(app, pygame.K_TAB, "\t")
+    assert b.field == "addr"
+    _type(app, "C010")
+    assert (b.row, b.field, b.col) == (0xC010, "data", 0) and b.start == 0xC000
+    assert app.m.mem[0xC010] == 0
+    app.close()
+
+
+def test_dump_list_export_reloads(tmp_path, monkeypatch):
+    """⇧⌘Eで、本のダンプリストの形(番地 8バイト:チェックサム)に書き出す。読み込みでも
+    貼り付けでも、同じバイトに戻る"""
+    from sc61box import programs
+
+    monkeypatch.setenv("SC61BOX_PROGRAMS", str(tmp_path))
+    app = make_app(scale=0.5, frames=2, norom=True)
+    b = app.bench
+    assert b is not None
+    b.paste(_hex_lines(0xC000, JUMP_OVER_ZEROS))
+    _key(app, pygame.K_e, "e", pygame.KMOD_CTRL | pygame.KMOD_SHIFT)
+    path = next(tmp_path.rglob("dumplist-*.hex"))
+    text = path.read_text(encoding="utf-8")
+    lines = [ln for ln in text.splitlines() if ln[:1] not in (";", "#")]
+    assert lines[0] == "C000 79C0200000000000:59"
+    assert lines[-1] == "C020 027F10F8005237:12" and len(lines) == 5
+    assert "# run: CALL &C000" in text
+    blocks, errors = programs.parse_hex(text)
+    assert not errors
+    got = b"".join(data for _a, data in blocks)
+    assert blocks[0][0] == 0xC000 and got == JUMP_OVER_ZEROS
+    m2, b2 = bench()
+    res = b2.paste(text)
+    assert res.written == len(JUMP_OVER_ZEROS) and not res.bad_sums and not res.skipped
+    assert bytes(m2.mem[0xC000 : 0xC000 + len(JUMP_OVER_ZEROS)]) == JUMP_OVER_ZEROS
+    labels = [it.label for it in app.popup_items("program")]
+    assert "ダンプリストの形で書き出す" in labels
+    app.close()
+
+
+def test_hex_file_checksums():
+    """.hexの行末の「:チェックサム」は、合わなければエラーにして読み込まない。チェックサムは
+    行のバイトの和の下2桁"""
+    from sc61box import programs
+
+    blocks, errors = programs.parse_hex("C000 027F10F800523700:12\nC008 0102:03\n")
+    assert not errors and len(blocks) == 2
+    blocks, errors = programs.parse_hex("C000 027F10F800523700:12\nC008 0102:04\n", "x.hex ")
+    assert blocks == [(0xC000, bytes.fromhex("027F10F800523700"))]
+    assert errors == ["x.hex 2行目のチェックサムが合わない(計算すると03): C008 0102:04"]
+    for bad in ("0G", "3", "", "03:03"):
+        blocks, errors = programs.parse_hex(f"C008 0102:{bad}\n")
+        assert not blocks and "チェックサム(16進表記2桁)ではない" in errors[0]
+    m, b = bench()
+    res = b.paste("C000 027F10F800523700:13\nC008: 01 02 : 03\n")
+    assert res.written == 10 and res.bad_sums == [0xC000]
+
+
+def test_span_field_typing(monkeypatch, tmp_path):
+    """範囲の行をクリックして始めと終わりの番地を8桁打つと、書き出す範囲になる。Escでやめる、
+    何も打たずにEnterで自動に戻す。逆の順は理由を出す。⌘Vで貼り付けられる"""
+    monkeypatch.setenv("SC61BOX_PROGRAMS", str(tmp_path))
+    app = make_app(scale=0.5, frames=2, norom=True)
+    b, v = app.bench, app.bench_view
+    assert b is not None and v is not None
+    _type(app, "C000 020137")
+    app.frame()
+    rect = next(r for r, kind, _a in v.hits if kind == "span")
+    app.handle(ev(pygame.MOUSEBUTTONDOWN, button=1, pos=rect.center))
+    assert b.span_buf == ""
+    app.frame()
+    assert next(r for r, kind, _a in v.hits if kind == "span")
+    assert "Enter" in v.hint()
+    _type(app, "C00")
+    _key(app, pygame.K_ESCAPE)
+    assert b.span_buf is None and b.span is None
+    app.handle(ev(pygame.MOUSEBUTTONDOWN, button=1, pos=rect.center))
+    cursor = b.cursor
+    _type(app, "C010C00")
+    _key(app, pygame.K_BACKSPACE)
+    _type(app, "00")
+    assert b.span is None and "前です" in v.flash and not v.flash_ok
+    app.handle(ev(pygame.MOUSEBUTTONDOWN, button=1, pos=rect.center))
+    _type(app, "C000C00F")
+    assert b.span == (0xC000, 0xC010) and b.export_ranges() == [(0xC000, 0xC010)]
+    assert v.flash == "書き出す範囲をC000〜C00Fにしました" and v.flash_ok
+    assert b.cursor == cursor and app.m.mem[0xC003] == 0
+    app.frame()
+    app.bench_export(listing=True)
+    text = next(tmp_path.rglob("dumplist-*.hex")).read_text(encoding="utf-8")
+    assert "C000 0201370000000000:3A\nC008 0000000000000000:00\n" in text
+    info = b.save()
+    m2, b2 = bench()
+    b2.restore(info)
+    assert b2.span == (0xC000, 0xC010)
+    app.frame()
+    rect = next(r for r, kind, _a in v.hits if kind == "span")
+    app.handle(ev(pygame.MOUSEBUTTONDOWN, button=1, pos=rect.center))
+    _key(app, pygame.K_RETURN, "\r")
+    assert b.span is None and b.export_ranges() == [(0xC000, 0xC003)]
+    app.handle(ev(pygame.MOUSEBUTTONDOWN, button=1, pos=rect.center))
+    monkeypatch.setattr(app, "clipboard", lambda: "&C000-&C001\n")
+    _key(app, pygame.K_v, "v", pygame.KMOD_CTRL)
+    assert b.span == (0xC000, 0xC002) and b.span_buf is None
+    assert bytes(app.m.mem[0xC000:0xC003]) == bytes.fromhex("020137")
+    b.load_blocks([(0xC100, b"\x37")])
+    assert b.span is None
+    app.close()
+
+
+def test_span_without_written_bytes():
+    """書いた所がなくても、範囲を決めれば書き出せる(BASICのPOKEで書いたマシン語など)"""
+    app = make_app(scale=0.5, frames=2, norom=True)
+    b, v = app.bench, app.bench_view
+    assert b is not None and v is not None
+    app.frame()
+    assert b.export_ranges() == []
+    rect = next(r for r, kind, _a in v.hits if kind == "span")
+    app.handle(ev(pygame.MOUSEBUTTONDOWN, button=1, pos=rect.center))
+    _type(app, "C000C007")
+    assert b.export_ranges() == [(0xC000, 0xC008)]
+    app.frame()
+    assert any(kind == "listing" for _r, kind, _a in v.hits)
+    app.close()
+
+
+def test_full_range_export_finishes():
+    """0000〜FFFFの範囲も書き出せる(逆アセンブルの番地がFFFFから0000へ戻っても止まる)"""
+    from sc61box import programs
+
+    m, b = bench()
+    m.mem[0xFFFF] = 0x79  # 3バイトの命令がFFFFから0000へまたがる
+    b.set_span(0x0000, 0xFFFF)
+    assert b.export_ranges() == [(0, 0x10000)]
+    for text in (b.dump_text(0, 0x10000), b.dump_list(0, 0x10000)):
+        blocks, errors = programs.parse_hex(text)
+        assert not errors and sum(len(d) for _a, d in blocks) == 0x10000
+        assert blocks[0][0] == 0 and blocks[-1][0] + len(blocks[-1][1]) == 0x10000
+
+
+def test_fields_keep_non_hex_keys():
+    """開始番地と範囲の欄では、空白や区切りの字を打っても欄に打ったまま(続けて打った字で
+    ダンプを書き換えない)。ほかの字は知らせを出す。矢印は欄をやめてカーソルを動かす"""
+    app = make_app(scale=0.5, frames=2, norom=True)
+    b, v = app.bench, app.bench_view
+    assert b is not None and v is not None
+    _type(app, "C000 37")
+    app.frame()
+    before = bytes(app.m.mem[0xC000:0xC200])
+    span = next(r for r, kind, _a in v.hits if kind == "span")
+    app.handle(ev(pygame.MOUSEBUTTONDOWN, button=1, pos=span.center))
+    _type(app, "C000 ")
+    _key(app, pygame.K_MINUS, "-")
+    _type(app, "C0FF")
+    assert b.span == (0xC000, 0xC100) and bytes(app.m.mem[0xC000:0xC200]) == before
+    app.frame()
+    start = next(r for r, kind, _a in v.hits if kind == "start")
+    app.handle(ev(pygame.MOUSEBUTTONDOWN, button=1, pos=start.center))
+    _key(app, pygame.K_7, "&")
+    _key(app, pygame.K_g, "g")
+    assert b.start_buf == "" and "16進表記" in v.flash
+    _type(app, "C010")
+    assert b.start == 0xC010 and bytes(app.m.mem[0xC000:0xC200]) == before
+    app.handle(ev(pygame.MOUSEBUTTONDOWN, button=1, pos=start.center))
+    row = b.row
+    _key(app, pygame.K_DOWN)
+    assert b.start_buf is None and b.row == row + 8
+    app.close()
+
+
+def test_auto_button_clears_span():
+    """自分で範囲を決めると、範囲の行の右に「自動に戻す」が出る。押すと書いた所からの範囲"""
+    app = make_app(scale=0.5, frames=2, norom=True)
+    b, v = app.bench, app.bench_view
+    assert b is not None and v is not None
+    _type(app, "C000 37")
+    app.frame()
+    assert not any(kind == "spanauto" for _r, kind, _a in v.hits)
+    b.set_span(0xC000, 0xC0FF)
+    app.frame()
+    btn = next(r for r, kind, _a in v.hits if kind == "spanauto")
+    assert v.hit(btn.center) == ("spanauto", 0)
+    app.handle(ev(pygame.MOUSEBUTTONDOWN, button=1, pos=btn.center))
+    assert b.span is None and b.export_ranges() == [(0xC000, 0xC001)] and v.flash_ok
+    app.close()
+
+
+def test_spaces_between_typed_bytes():
+    """バイトの2桁を打った直後の空白は区切りとして読み飛ばす(「02 7F 10」と打っても
+    バイトを飛ばさない)。続けてもう1度Spaceを押せば、次のバイトへ進む"""
+    m, b = bench()
+    type_line(b, "C000 02 7F 10 F8 00 52 37 00")
+    assert bytes(m.mem[0xC000:0xC008]) == bytes.fromhex("027F10F800523700")
+    assert workbench.checksum(b.row_bytes(0xC000)) == 0x12
+    b.go(0xC010)
+    type_line(b, "AA  BB")
+    assert bytes(m.mem[0xC010:0xC013]) == bytes.fromhex("AA00BB")
+
+
+def test_restore_puts_cursor_on_address():
+    """保存した状態に戻すと、カーソルは番地の欄にある。続けて番地を打っても、前のバイトを
+    書き換えない"""
+    m, b = bench()
+    type_line(b, "C000 027F")
+    info = b.save()
+    m2, b2 = bench()
+    m2.mem[0xC000:0xC002] = bytes.fromhex("027F")
+    b2.restore(info)
+    assert b2.field == "addr"
+    type_line(b2, "C000 37")
+    assert bytes(m2.mem[0xC000:0xC002]) == bytes.fromhex("377F")

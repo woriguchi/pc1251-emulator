@@ -42,7 +42,7 @@ class PasteResult:
 @dataclass
 class Edit:
     """取り消せる書き込み1回分(1バイトの打ち込みか、1回の貼り付け)。書く前と書いたあとの
-    メモリを比べて、変わったところだけを持つ。番地はメモリの実体の番地(鏡の番地に書いても、
+    メモリを比べて、変わったところだけを持つ。番地はメモリの実体の番地(ミラーの番地に書いても、
     同じRAMは1つにまとまる)。before・afterは書く前と書いたあとのカーソルと開始番地"""
 
     # 知らせに出す名前(「C003番地の打ち込み」など)。言語を切り替えても出すときの言語に
@@ -61,13 +61,15 @@ UNDO_MAX = 500  # 取り消せる回数
 
 HEX4 = re.compile(r"[0-9A-Fa-f]{4}:?")
 HEXS = re.compile(r"(?:[0-9A-Fa-f]{2})+")
+SUM = re.compile(r"(.*?)\s*:\s*([0-9A-Fa-f]{2})")
 
 
 def parse_dump(text: str) -> tuple[list[tuple[int | None, bytes, int | None]], int]:
     """貼り付けた文字を(番地, バイト, チェックサム)の行にする。番地がNoneの行は前の行の続き。
 
     読める形
-    - 本のダンプリスト: 「C000 027F10F800523700 12」(続きの行は番地なし)
+    - 本のダンプリスト: 「C000 027F10F800523700 12」(続きの行は番地なし)。
+      チェックサムの前は「:」でもよい(「C000 027F10F800523700:12」)
     - エミュレータの.hex: 「C000 02 7F 10 F8 ; 注釈」
     """
     rows: list[tuple[int | None, bytes, int | None]] = []
@@ -81,11 +83,14 @@ def parse_dump(text: str) -> tuple[list[tuple[int | None, bytes, int | None]], i
         if len(toks) >= 2 and HEX4.fullmatch(toks[0]):
             addr = int(toks[0][:4], 16)
             toks = toks[1:]
+        total = None
+        tail = SUM.fullmatch(" ".join(toks))
+        if tail:  # 「:チェックサム」の形
+            toks, total = tail[1].split(), int(tail[2], 16)
         if not toks or not all(HEXS.fullmatch(t) for t in toks):
             skipped += 1
             continue
-        total = None
-        if len(toks) >= 2 and len(toks[0]) > 2 and len(toks[-1]) == 2:
+        if total is None and len(toks) >= 2 and len(toks[0]) > 2 and len(toks[-1]) == 2:
             total = int(toks[-1], 16)  # 「16字 チェックサム」の形
             toks = toks[:-1]
         rows.append((addr, bytes.fromhex("".join(toks)), total))
@@ -154,7 +159,6 @@ class Bench:
         self.rom = not m.norom  # ROMのある本体か
         norom.install(m)
         lo, hi = m.model.ram
-        self.ram = (lo, hi)
         if start is None:
             start = 0xC000 if lo <= 0xC000 < hi else lo
         self.start = start  # 実行を始める番地
@@ -163,6 +167,9 @@ class Bench:
         # 決めた(カーソルの移動、打ち込み、貼り付けでは変わらない)
         self.start_by = ""
         self.start_buf: str | None = None  # 開始番地の欄に打っている途中の字(打っていなければNone)
+        # 自分で決めた書き出す範囲([始め, 終わり))。Noneなら書いた所から決める
+        self.span: tuple[int, int] | None = None
+        self.span_buf: str | None = None  # 範囲の欄に打っている途中の字(始めと終わりの8桁まで)
         # edit(編集中)、run(実行中)、pause(一時停止中)。ROMのある本体はrunから始まり、
         # editにはならない
         self.state = "run" if self.rom else "edit"
@@ -178,7 +185,8 @@ class Bench:
         self.col = 0  # 行の中のバイトの位置(0〜7。8は行の終わり)
         self.nib = 0
         self.field = "addr"
-        self.addr_done = False  # 番地の4桁を打ち終えた直後(続くSpaceは読み飛ばす)
+        # 番地の4桁か、バイトの2桁を打ち終えた直後(続くSpaceは区切りとして読み飛ばす)
+        self.addr_done = False
         self.top_rows = 0  # カーソルの行が、表示の何行目にあるか
         self.snap: bytes = bytes(m.mem)  # 実行を始めたときのメモリ(変わったところに色をつける)
         self.changed: set[int] = set()
@@ -218,6 +226,11 @@ class Bench:
             return ""
         return self._outside(pc)
 
+    @property
+    def ram(self) -> tuple[int, int]:
+        """本体のRAMの範囲(プログラムの# ram: で終わりが動く)"""
+        return self.m.model.ram
+
     def in_ram(self, a: int) -> bool:
         lo, hi = self.ram
         mirror = self.m.model.mirror
@@ -235,7 +248,7 @@ class Bench:
         return True
 
     def _forget_run(self, at: int) -> None:
-        """RAMの番地atで実行した印を消す。鏡の番地から実行した印(CPUは鏡の番地で覚える)も
+        """RAMの番地atで実行した印を消す。ミラーの番地から実行した印(CPUはミラーの番地で覚える)も
         消す"""
         self.executed[at] = 0
         mirror = self.m.model.mirror
@@ -243,7 +256,7 @@ class Bench:
             self.executed[at - mirror[2]] = 0
 
     def _mark_at(self, a: int) -> int:
-        """書いた印を置く番地。鏡の番地に書いたものは、RAMの番地に書いたものとして数える"""
+        """書いた印を置く番地。ミラーの番地に書いたものは、RAMの番地に書いたものとして数える"""
         mirror = self.m.model.mirror
         if mirror and mirror[0] <= a < mirror[1]:
             return a + mirror[2]
@@ -396,6 +409,7 @@ class Bench:
         else:
             self.nib = 0
             self.col += 1
+            self.addr_done = True
         self._commit(edit)  # 取り消したあとのやり直しで、カーソルを打ったあとの所へ戻すため
         return ""
 
@@ -409,8 +423,8 @@ class Bench:
         self.field, self.col, self.nib = "data", 0, 0
 
     def to_data(self) -> None:
-        """Space: 番地の欄からバイトの欄へ。バイトの欄では次のバイトへ(番地を打ち終えた
-        直後のSpaceは、本のダンプリストの区切りなので読み飛ばす)"""
+        """Space: 番地の欄からバイトの欄へ。バイトの欄では次のバイトへ(番地やバイトを打ち
+        終えた直後のSpaceは、ダンプリストの区切りなので読み飛ばす)"""
         if self.addr_done:
             self.addr_done = False
             return
@@ -448,7 +462,7 @@ class Bench:
 
     def go_end(self, rows_shown: int = 8) -> None:
         """開始番地から書いてあるところの終わりへ(行の頭は開始番地と同じ並び)"""
-        ranges = self.export_ranges()
+        ranges = self.written_ranges()
         end = next((hi for lo, hi in ranges if lo <= self.start < hi), self.start + 1)
         last = (end - 1) & 0xFFFF
         row = (last - (last - self.start) % ROW) & 0xFFFF
@@ -538,7 +552,7 @@ class Bench:
 
     def _drop_marks(self, blocks: list[tuple[int, bytes]]) -> None:
         """読み込んだプログラムの範囲にある、自分で決めた指定を消す(前のプログラムのもの)。
-        読み込んだプログラムの# data: の範囲は置き直す。鏡の番地に書いたものは、RAMの番地に
+        読み込んだプログラムの# data: の範囲は置き直す。ミラーの番地に書いたものは、RAMの番地に
         書いたものとして扱う(指定はRAMの番地に置く)"""
         spans = self._real_spans(blocks)
         for lo, hi in spans:
@@ -554,7 +568,7 @@ class Bench:
         self._put_data()
 
     def _real_spans(self, blocks: list[tuple[int, bytes]]) -> list[tuple[int, int]]:
-        """ダンプを書く範囲を、RAMの番地のひと続き(始め, 終わりの次)にする(鏡の番地は
+        """ダンプを書く範囲を、RAMの番地のひと続き(始め, 終わりの次)にする(ミラーの番地は
         RAMの番地にし、RAMの外は除く)"""
         spans: list[tuple[int, int]] = []
         for addr, data in blocks:
@@ -571,7 +585,7 @@ class Bench:
     def use_data(self, spans: list[tuple[int, int | None]]) -> None:
         """読み込んだプログラムの# data: の範囲を、自分で決めたデータの指定にする。重なる
         範囲と続いている範囲は1つにまとめ、範囲の中にある番地だけの指定は捨てる"""
-        # 鏡の番地で書いた範囲は、RAMの番地にする(鏡の境をまたぐ範囲は、RAMの番地の
+        # ミラーの番地で書いた範囲は、RAMの番地にする(ミラーの境をまたぐ範囲は、RAMの番地の
         # ひと続きごとに分ける)
         real: list[tuple[int, int | None]] = []
         for lo, hi in spans:
@@ -653,6 +667,7 @@ class Bench:
                 n += self.write(addr + i, b)
         self._drop_marks(blocks)
         self.set_start(blocks, start)
+        self.span = None
         return n
 
     # ---- 開始番地 ----
@@ -689,16 +704,55 @@ class Bench:
             return ""
         return self.set_start_at(int(buf, 16))
 
+    # ---- 書き出す範囲 ----
+    def set_span(self, lo: int, last: int) -> str:
+        """書き出す範囲をlo〜lastに決める。知らせの文を返す。できなければ理由"""
+        self.span_buf = None
+        if last < lo:
+            return tr("終わりの番地が始めの番地より前です")
+        self.span = (lo, last + 1)
+        return tr("書き出す範囲を{where}にしました", where=span_text(lo, last + 1))
+
+    def clear_span(self) -> str:
+        """書き出す範囲を、書いた所から決めるのに戻す"""
+        self.span, self.span_buf = None, None
+        return tr("書き出す範囲を自動に戻しました")
+
+    def type_span(self, v: int) -> str:
+        """範囲の欄に16進表記の1字を打つ。8桁そろえば範囲にして知らせの文を返す"""
+        buf = (self.span_buf or "") + f"{v:X}"
+        if len(buf) < 8:
+            self.span_buf = buf
+            return ""
+        return self.set_span(int(buf[:4], 16), int(buf[4:], 16))
+
+    def paste_span(self, text: str) -> str:
+        """範囲の欄に貼り付ける(「C000-C0FF」「&C000〜&C0FF」など)。範囲でなければ理由"""
+        hit = re.fullmatch(r"&?([0-9A-Fa-f]{4})\s*[-〜~, ]?\s*&?([0-9A-Fa-f]{4})", text.strip())
+        if hit is None:
+            return tr("貼り付けた文字は範囲ではありません(始めと終わりを16進表記の4桁で)")
+        return self.set_span(int(hit[1], 16), int(hit[2], 16))
+
     def dump_text(self, start: int, end: int) -> str:
-        """start〜end-1を.hexの形(番地、バイト、逆アセンブル)にする"""
-        lines = []
+        """start〜end-1を.hexの形(番地、バイト、逆アセンブル)にする。行はバイト数で数えて
+        止める(0000〜FFFFでは、番地がFFFFから0000へ戻るので番地では止められない)"""
+        lines, done = [], 0
         for ins in self.lines_from(start):
-            a = ins.addr
-            if not start <= a < end:
+            if done >= end - start:
                 break
-            size = max(1, min(ins.size, end - a))
+            a = ins.addr
+            size = max(1, min(ins.size, end - start - done))
             data = " ".join(f"{self.read(a + i):02X}" for i in range(size))
             lines.append(f"{a:04X} {data:<12}; {ins.line()}")
+            done += ins.size
+        return "\n".join(lines) + "\n"
+
+    def dump_list(self, start: int, end: int) -> str:
+        """start〜end-1を本のダンプリストの形(番地、8バイト:チェックサム)にする"""
+        lines = []
+        for a in range(start, end, ROW):
+            data = bytes(self.read(a + i) for i in range(min(ROW, end - a)))
+            lines.append(f"{a:04X} {data.hex().upper()}:{checksum(data):02X}")
         return "\n".join(lines) + "\n"
 
     GAP = 64  # 書いた所どうしのあいだがこのバイト数より短ければ、つなげて1つの範囲にする
@@ -712,10 +766,17 @@ class Bench:
                 self.written[a] = 1
 
     def export_ranges(self) -> list[tuple[int, int]]:
-        """書き出す範囲([始め, 終わり)の並び)。作業欄から書いた番地(読み込んだダンプも含む)と、
-        ROMなしの本体では開始番地からused_endまで(作業欄で書いていない、前から残っている
-        プログラム)を合わせ、あいだの短いすきまはつなげる。ROMのある本体のRAMにはBASICや
-        ROMの作業域も入っているので、書いた番地だけにする"""
+        """書き出す範囲([始め, 終わり)の並び)。自分で決めた範囲があればそれ、なければ
+        written_ranges"""
+        if self.span is not None:
+            return [self.span]
+        return self.written_ranges()
+
+    def written_ranges(self) -> list[tuple[int, int]]:
+        """書いた所から決める範囲([始め, 終わり)の並び)。作業欄から書いた番地(読み込んだ
+        ダンプも含む)と、ROMなしの本体では開始番地からused_endまで(作業欄で書いていない、
+        前から残っているプログラム)を合わせ、あいだの短いすきまはつなげる。ROMのある本体の
+        RAMにはBASICやROMの作業域も入っているので、書いた番地だけにする"""
         lo, hi = self.ram
         marks = bytearray(self.written[lo:hi])
         if not self.rom and lo <= self.start < hi and self.read(self.start):
@@ -772,6 +833,7 @@ class Bench:
             "calls": list(self.calls),
             "executed": executed,
             "marks": [[a, what] for a, what in sorted(self.marks.items())],
+            "span": list(self.span) if self.span else None,
         }
 
     @staticmethod
@@ -804,8 +866,14 @@ class Bench:
         by = info.get("start_by", "auto" if "start" in info else "")
         self.start_by = by if isinstance(by, str) and by in ("", "auto", "user") else "auto"
         self.start_buf = None
+        span = info.get("span")
+        self.span, self.span_buf = None, None
+        if isinstance(span, list) and len(span) == 2 and addr(span[0], -1) >= 0:
+            if isinstance(span[1], int) and span[0] < span[1] <= 0x10000:
+                self.span = (span[0], span[1])
         self.row = addr(info.get("row"), self.start)
-        self.col, self.nib, self.field, self.addr_done, self.top_rows = 0, 0, "data", False, 2
+        # カーソルは番地の欄に置く(続けて打った字が、前のバイトを書き換えないように)
+        self.col, self.nib, self.field, self.addr_done, self.top_rows = 0, 0, "addr", False, 2
         breaks = info.get("breaks")
         self.breaks = {a for a in breaks if addr(a, -1) >= 0} if isinstance(breaks, list) else set()
         self.forget_edits()
@@ -1135,7 +1203,7 @@ class Bench:
         return t in norom.ROUTINES or any(a == t for a, _ in romsyms.ROUTINES_1251.values())
 
     def _executed_list(self) -> list[int]:
-        """実行した番地(RAMの中。鏡の番地はRAMの番地にする)"""
+        """実行した番地(RAMの中。ミラーの番地はRAMの番地にする)"""
         lo, hi = self.ram
         out = [lo + i for i, v in enumerate(self.executed[lo:hi]) if v]
         mirror = self.m.model.mirror
@@ -1170,7 +1238,7 @@ class Bench:
             self.read,
             in_ram=in_ram,
             target_ok=self.target_ok,
-            regions=self.export_ranges(),
+            regions=self.written_ranges(),
             entries=[a for a in entries if in_ram(a)],
             executed=self._executed_list(),
             marks=self.marks,
@@ -1180,7 +1248,7 @@ class Bench:
         return cm
 
     def real_ram(self, a: int) -> bool:
-        """aがRAMの番地か(鏡の番地は含まない)"""
+        """aがRAMの番地か(ミラーの番地は含まない)"""
         lo, hi = self.ram
         return lo <= a < hi
 

@@ -5,6 +5,7 @@ import pytest
 from helpers import make_app
 
 from sc61box import programs
+from sc61box.machine import CLOCK
 
 ev = pygame.event.Event
 
@@ -382,7 +383,8 @@ def test_keys_during_program_are_held_together(model):
 
 
 def test_short_tap_during_program_is_held_long_enough():
-    """プログラムが動いているあいだに短く押したキーも、LIVE_DOWNのあいだは押しておく"""
+    """プログラムが動いているあいだに短く押したキーも、DIRECT_MINのあいだは押しておき、
+    それより長く押したキーは離した時点で離す"""
     m = (app := make_app(model="1261")).m
     _running(app)
     app.typer.press_live("6")
@@ -391,7 +393,96 @@ def test_short_tap_during_program_is_held_long_enough():
     start = m.cpu.cycles
     while "6" in m.held:
         app.frame()
-    assert m.cpu.cycles - start >= app.typer.LIVE_DOWN
+    held = m.cpu.cycles - start
+    assert app.typer.DIRECT_MIN <= held < app.typer.DIRECT_MIN + CLOCK // 30
+    app.typer.press_live("4")
+    for _ in range(3):
+        app.frame()
+    app.typer.release_live("4")
+    assert "4" not in m.held
+    app.close()
+
+
+def test_frame_polls_between_substeps():
+    """runはフレームの本体の実行をSUBSTEPSに分け、合間にpollを呼ぶ(キーの遅れを小さくする)。
+    分けても1フレームで進むサイクルは同じで、分け方はほぼ均等"""
+    from sc61box.app import SUBSTEPS
+
+    app = make_app(frames=3)
+    calls: list[int] = []
+    c0 = app.m.cpu.cycles
+    app.frame(lambda: calls.append(app.m.cpu.cycles))
+    assert len(calls) == SUBSTEPS - 1
+    gaps = [b - a for a, b in zip([c0, *calls], [*calls, app.m.cpu.cycles], strict=True)]
+    assert max(gaps) - min(gaps) <= 2 * (CLOCK // 200)
+    assert abs(sum(gaps) - CLOCK // 30) <= CLOCK // 200
+    app.close()
+
+
+def test_frame_stops_after_pause_or_restore_between_substeps():
+    """合間の操作で一時停止したら、そのフレームの残りは動かさない。状態を復元したら、復元前の
+    目標のサイクルまで動かさず、復元した所で止まる"""
+    app = make_app(frames=3)
+    m = app.m
+    c0 = m.cpu.cycles
+
+    def pause() -> None:
+        app.halted = True
+
+    app.frame(pause)
+    assert 0 < m.cpu.cycles - c0 <= CLOCK // 30 // 3  # 4分割の1つめで止まる
+    app.halted = False
+    for _ in range(3):
+        app.frame()
+    snap = m.snapshot()
+    saved = m.cpu.cycles
+    for _ in range(3):
+        app.frame()
+
+    def restore() -> None:
+        m.restore(snap)
+
+    app.frame(restore)
+    assert m.cpu.cycles == saved
+    app.close()
+
+
+def test_sound_after_restore_between_substeps_is_short():
+    """合間に状態を復元しても、そのフレームの音は復元した所から先だけ(復元前の時刻からの差で
+    何秒ぶんもの音を作らない)"""
+    from sc61box.audio import FRAME_SAMPLES, TARGET
+
+    class Ear:
+        keep_silent = True
+
+        def __init__(self) -> None:
+            self.pcm: list[bytes] = []
+
+        def level(self) -> int:
+            return TARGET
+
+        def push(self, pcm: bytes) -> None:
+            self.pcm.append(pcm)
+
+        def clear(self) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+    app = make_app(frames=3)
+    m = app.m
+    snap = m.snapshot()
+    for _ in range(60):  # 2秒先へ
+        app.frame()
+    ear = Ear()
+    app.speaker = ear  # pyrefly: ignore
+
+    def restore() -> None:
+        m.restore(snap)
+
+    app.frame(restore)
+    assert all(len(p) <= 2 * FRAME_SAMPLES for p in ear.pcm)
     app.close()
 
 

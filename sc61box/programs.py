@@ -43,6 +43,9 @@
                           ほかの機種では一覧に出ず、開いても読み込まない
     # pad: dpup=8 a=SPC   ゲームパッドの割り当て(入力の名前=本体のキーの名前。gamepad.py)。
                           読み込むと、この割り当てになる
+    # ram: 6800-7FFF     機種のRAMの終わりより上もRAMにする(終わりの番地まで広げる。ROMや
+                          液晶RAMにかかる範囲は書けない)。読み込むと広がり、# ram: のない
+                          プログラムを読み込むと機種のRAMに戻る
 """
 
 import os
@@ -52,7 +55,7 @@ from dataclasses import dataclass, field
 from . import paths
 from .i18n import tr
 from .keytype import stored_len
-from .machine import BASE_MODEL, MODELS
+from .machine import BASE_MODEL, MODELS, ram_span
 
 EXTS = (".bas", ".hex")
 
@@ -60,10 +63,11 @@ EXTS = (".bas", ".hex")
 POKE_RE = re.compile(r"POKE\s*(&[0-9A-F]{1,4}|[0-9]{1,5})\b")
 
 
-def fits(model: str, addrs: list[tuple[int, int]]) -> bool:
-    """番地の範囲(始め, 終わりの次)がどれも、その機種のRAMか液晶のRAMに収まるか"""
+def fits(model: str, addrs: list[tuple[int, int]], ram_top: int | None = None) -> bool:
+    """番地の範囲(始め, 終わりの次)がどれも、その機種のRAMか液晶のRAMに収まるか。ram_topは
+    # ram: で広げたRAMの終わり"""
     m = MODELS[model]
-    areas = [m.ram, *m.lcd]
+    areas = [ram_span(m, ram_top), *m.lcd]
     return all(any(lo <= a and b <= hi for lo, hi in areas) for a, b in addrs)
 
 
@@ -131,6 +135,7 @@ class Program:
     )  # 「after: code.hex」など、ダンプの指示(書き出し用)
     # # data: の範囲(始め, 終わりの次)。終わりを書いていなければ(始め, None)
     data: list[tuple[int, int | None]] = field(default_factory=list)
+    ram: tuple[int, int] | None = None  # # ram: の範囲(始め, 終わりの次)
     errors: list[str] = field(default_factory=list)
 
     @property
@@ -156,13 +161,18 @@ class Program:
         return out
 
     @property
+    def ram_top(self) -> int | None:
+        """# ram: で広げるRAMの終わり(含まない)。なければNone"""
+        return self.ram[1] if self.ram else None
+
+    @property
     def inferred(self) -> list[str] | None:
         """番地がRAMか液晶に収まる機種。番地がなければNone(どの機種でも)、収まる機種が
         なければ空。RAMの範囲だけが違う機種は元の機種に含める(runs_onがBASE_MODELで見る)"""
         addrs = self.addresses
         if not addrs:
             return None
-        ok = [name for name in MODELS if fits(name, addrs)]
+        ok = [name for name in MODELS if fits(name, addrs, self.ram_top)]
         return [name for name in ok if BASE_MODEL.get(name) not in ok]
 
     def runs_on(self, model: str) -> bool:
@@ -184,7 +194,7 @@ class Program:
         BASICの置き場所が元の機種と違うときは、BASICが置かれる範囲(見積もり)にかからないこと
         (# setup:でBASICの置き場所を動かすものは見ない)"""
         addrs = self.addresses
-        if not fits(model, addrs):
+        if not fits(model, addrs, self.ram_top):
             return False
         start = MODELS[model].prog_start
         if self.setup or start == MODELS[BASE_MODEL[model]].prog_start:
@@ -225,7 +235,7 @@ def _directive(line: str) -> tuple[str, str] | None:
     key = key.strip().lower()
     if key in (
         "title", "run", "hex", "bin", "after", "model", "mode", "setup", "help", "norom", "data",
-        "pad",
+        "pad", "ram",
     ):  # fmt: skip
         return key, val.strip()
     return None
@@ -266,7 +276,9 @@ YASM_LINE = re.compile(r"([0-9A-Fa-f]{4}) : (.*)")
 
 
 def parse_hex(text: str, where: str = "") -> tuple[list[tuple[int, bytes]], list[str]]:
-    """「C200 04F1F9...[:チェックサム]」の行を読む。番地だけの行や空行は飛ばす"""
+    """「C200 04F1F9...[:チェックサム]」の行を読む。番地だけの行や空行は飛ばす。
+    「:」があれば、そのあとのチェックサム(バイトの和の下2桁)が合わない行や、16進表記2桁で
+    ない行はエラーにする"""
     blocks: list[tuple[int, bytes]] = []
     errors: list[str] = []
     for n, raw in enumerate(text.splitlines(), 1):
@@ -287,7 +299,8 @@ def parse_hex(text: str, where: str = "") -> tuple[list[tuple[int, bytes]], list
                 pad = len(body) - len(body.lstrip(" "))
                 if addr % 8 == 0 and pad % 3 == 0:
                     addr += pad // 3
-            data = bytes.fromhex(body.split(":")[0].replace(" ", ""))
+            data_text, colon, total = body.partition(":")
+            data = bytes.fromhex(data_text.replace(" ", ""))
         except ValueError:
             errors.append(
                 tr("{where}{line}行目を16進ダンプとして読めない: {text}",
@@ -298,6 +311,19 @@ def parse_hex(text: str, where: str = "") -> tuple[list[tuple[int, bytes]], list
             errors.append(
                 tr("{where}{line}行目の番地がFFFFを越える: {text}",
                    where=where, line=n, text=line[:30])
+            )  # fmt: skip
+            continue
+        total = total.strip()
+        if colon and not re.fullmatch(r"[0-9A-Fa-f]{2}", total):
+            errors.append(
+                tr("{where}{line}行目の「:」のあとがチェックサム(16進表記2桁)ではない: {text}",
+                   where=where, line=n, text=line[:30])
+            )  # fmt: skip
+            continue
+        if colon and sum(data) & 0xFF != int(total, 16):
+            errors.append(
+                tr("{where}{line}行目のチェックサムが合わない(計算すると{sum:02X}): {text}",
+                   where=where, line=n, sum=sum(data) & 0xFF, text=line[:30])
             )  # fmt: skip
             continue
         blocks.append((addr, data))
@@ -370,6 +396,8 @@ def _add_hex(prog: Program, spec: str, near: str, key: str = "hex") -> None:
             d = _directive(line.strip()) if line.strip().startswith("#") else None
             if d and d[0] == "data":
                 _add_data(prog, d[1], name)
+            elif d and d[0] == "ram":
+                _set_ram(prog, d[1], name)
     (prog.after if key == "after" else prog.blocks).extend(blocks)
     prog.errors.extend(errors)
 
@@ -380,6 +408,17 @@ def _add_data(prog: Program, value: str, file: str) -> None:
     prog.data.extend(spans)
     if bad:
         prog.errors.append(tr("{file}: # data: の{text}が読めない", file=file, text=bad))
+
+
+def _set_ram(prog: Program, value: str, file: str) -> None:
+    """# ram: の値(「6800-7FFF」)を読んでprog.ramにする。読めなければprog.errorsに足す"""
+    spans, bad = parse_data(value)
+    hi = spans[0][1] if len(spans) == 1 else None
+    if bad or hi is None:
+        prog.errors.append(tr("{file}: # ram: の{text}が読めない(例:# ram: 6800-7FFF)",
+                              file=file, text=value.strip()))  # fmt: skip
+        return
+    prog.ram = (spans[0][0], hi)
 
 
 def _read_into(prog: Program, path: str) -> None:
@@ -396,6 +435,8 @@ def _read_into(prog: Program, path: str) -> None:
                 _add_hex(prog, d[1], os.path.dirname(path), d[0])
             elif d and d[0] == "data":
                 _add_data(prog, d[1], os.path.basename(path))
+            elif d and d[0] == "ram":
+                _set_ram(prog, d[1], os.path.basename(path))
             elif d and d[0] == "pad":  # いくつもの行に分けて書ける
                 prog.pad = d[1] if prog.pad is None else f"{prog.pad} {d[1]}".strip()
             elif d and d[0] in ("run", "setup", "help", "norom") and d[1]:

@@ -16,7 +16,7 @@ class Typer:
 
     列の要素は同時に押すキーの名前のリストで、次の印も入る。
     "@MODE:PRO"(スイッチを動かす)、"@IDLE"(ROMが入力待ちに戻るまで待つ)、"@CALL:…"と
-    "@WRITE:…"(前の打鍵が終わったところで手続きを呼ぶ、ダンプを書く)。
+    "@WRITE:…"(前の打鍵が終わったところで関数を呼ぶ、ダンプを書く)。
     パソコンのキーボードで押されたキーは、ROMが入力を待っているあいだは印LIVEと押した時刻を
     つけて同じ列に入り、押し続けているあいだは離されるまで押しておく(速く打っても取りこぼさない
     ように1つずつ届ける)。プログラムが動いているあいだは列に入れず、押されたときにすぐ押し、
@@ -37,6 +37,10 @@ class Typer:
     # ROMが入力待ちで止まってからこの時間がたつまでは、パソコンのキーを列に入れて1つずつ届ける
     # (1打鍵を受けたROMが次の入力待ちに戻るまでのあいだに押したキーも、列に入れる)
     WAIT_SPAN = CLOCK * 300 // 1000
+    # 列を通さずにすぐ押したキー(動いているプログラムが読むキー)を、押し始めから最低これだけは
+    # 押しておく。指で押した時間をそのまま本体に伝え、短すぎてプログラムのキー読みの間隔から
+    # 漏れるものだけを補う(長くすると、ゲームで短く押しても自機が止まらなくなる)
+    DIRECT_MIN = CLOCK * 25 // 1000
 
     def __init__(self, machine: PC1251, on_mode=None):
         self.m = machine
@@ -52,9 +56,9 @@ class Typer:
         if self.mode_key:
             self.UP = CLOCK * 150 // 1000
             self.LIVE_UP = CLOCK * 150 // 1000
-        self.on_mode = on_mode  # スイッチを動かす手続き
-        # 「@WRITE:…」のダンプを書く手続き(なければ本体のRAMにそのまま書く)。アプリは作業欄の
-        # 書いた範囲の覚えも合わせて更新する手続きにする
+        self.on_mode = on_mode  # スイッチを動かす関数
+        # 「@WRITE:…」のダンプを書く関数(なければ本体のRAMにそのまま書く)。アプリは作業欄の
+        # 書いた範囲の記録も合わせて更新する関数にする
         self.on_write: Callable[[list[tuple[int, bytes]]], None] | None = None
         self.queue: list[list[str]] = []
         self.writes: dict[str, list[tuple[int, bytes]]] = {}
@@ -107,8 +111,8 @@ class Typer:
 
     def release_live(self, name: str, source: object = None) -> None:
         """パソコンのキー(source)が離された。同じ本体のキーをほかのパソコンのキーがまだ押して
-        いれば、本体のキーは押したままにする。すぐ押したキーは、押し始めからLIVE_DOWNたつまでは
-        押しておく(プログラムがキーを読む間隔より短く押されても取りこぼさないように)"""
+        いれば、本体のキーは押したままにする。すぐ押したキーは、押し始めからDIRECT_MINたつまでは
+        押しておく"""
         held_by = self.sources.get(name, set())
         held_by.discard(source)
         if held_by:
@@ -119,10 +123,10 @@ class Typer:
         self.physical.discard(name)
         start = self.direct.get(name)
         if start is not None:
-            if self.m.cpu.cycles - start >= self.LIVE_DOWN:
+            if self.m.cpu.cycles - start >= self.DIRECT_MIN:
                 self._lift(name)
             else:
-                self.direct_off[name] = start + self.LIVE_DOWN
+                self.direct_off[name] = start + self.DIRECT_MIN
 
     def release_physical(self) -> None:
         """パソコンのキーがすべて離された(ほかのウィンドウに移ったときなど)"""

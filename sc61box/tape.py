@@ -1,7 +1,7 @@
 """カセットの音(wav)の書き出しと読み込み
 
 書き出しは、CSAVEがCポートのビット4〜6を3(内蔵の4kHzの発振)と2(2kHzの発振)に
-切り替える時刻から波形を作る。192kHzのCLOCKは48kHzの4倍なので、標本1つが4サイクル。
+切り替える時刻から波形を作る。192kHzのCLOCKは48kHzの4倍なので、サンプル1つが4サイクル。
 
 読み込みは、wavの波形を0と1の列に直し、ROMがXin(TESTのビット7、CUP・CDN)を読んだ
 時刻の値を返す。再生はROMが初めてXinを読んだときに始まる。
@@ -16,13 +16,13 @@ from .autotype import Typer
 from .machine import CLOCK, new_machine
 
 RATE = 48000
-SPS = CLOCK // RATE  # 1標本あたりのサイクル(4)
+SPS = CLOCK // RATE  # 1サンプルあたりのサイクル(4)
 OSC = {2: CLOCK // 2000, 3: CLOCK // 4000}  # 内蔵発振の周期(サイクル)
 AMP = 22000
 
 
 def render(events: list[tuple[int, int]], c0: int, c1: int) -> array:
-    """サイクルc0〜c1の音を16ビットの標本の列にする。eventsは(サイクル, モード)の列"""
+    """サイクルc0〜c1の音を16ビットのサンプルの列にする。eventsは(サイクル, モード)の列"""
     n = (c1 - c0) // SPS
     out = array("h", bytes(2 * n))
     ev = sorted(e for e in events if e[0] < c1)
@@ -69,7 +69,7 @@ class TapeOut:
 
     def feed(self, events: list[tuple[int, int]], cycle: int, mode: int) -> array | None:
         """1フレームぶんの音の切り替え(サイクル, モード)と、いまのサイクルとモードを渡す。
-        CSAVEの音がひと続き終わったときに、その標本の列を返す"""
+        CSAVEの音がひと続き終わったときに、そのサンプルの列を返す"""
         for c, v in events:
             if self.ev is None:
                 if v in OSC:

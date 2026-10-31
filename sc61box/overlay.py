@@ -586,6 +586,8 @@ class Paper:
         self.font = font
         self.cache: dict[tuple[int, int], pygame.Surface] = {}
         self.feed = 0.0  # 紙送りの残り(px)。0に向かって減る
+        self.line_frames = 29  # 1行を印字する時間(フレーム。Appが行ごとに決める)
+        self.moved = False  # 直前のtick()で紙を送ったか(プリンタの音を鳴らす)
         self.close_rect = pygame.Rect(0, 0, 0, 0)
         self.where_rect = pygame.Rect(0, 0, 0, 0)  # 保存先の表示
         self.small: pygame.font.Font | None = None
@@ -597,6 +599,17 @@ class Paper:
     def fed(self, lines: int) -> None:
         """lines行ぶん紙を送る"""
         self.feed += self.DOT * self.LINE * lines
+
+    @property
+    def moving(self) -> bool:
+        """紙送りが残っている"""
+        return self.feed > 0.5
+
+    def tick(self) -> None:
+        """1フレームぶん紙送りを進める(毎フレーム呼ぶ。紙を出していなくても)。line_framesで
+        決まる一定の速さで送る"""
+        self.moved = self.moving
+        self.feed = max(0.0, self.feed - self.DOT * self.LINE / self.line_frames)
 
     def _char(self, code: int, shade: int) -> pygame.Surface:
         """コードcodeの字の絵。shadeで点の濃さを少し変える(感熱紙のむら)"""
@@ -689,4 +702,3 @@ class Paper:
         c = self.close_rect.center
         for sx in (-1, 1):
             pygame.draw.line(dst, WHITE, (c[0] - 5, c[1] - 5 * sx), (c[0] + 5, c[1] + 5 * sx), 2)
-        self.feed = max(0.0, self.feed * 0.7 - 0.5)

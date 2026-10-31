@@ -1,5 +1,6 @@
 """液晶だけを見せるモード(--lcd、メニューの「液晶だけにする」)"""
 
+import warnings
 from unittest.mock import patch
 
 import pygame
@@ -111,7 +112,9 @@ def _native_resize(app, size):
     from pygame._sdl2.video import Window
 
     pygame.event.clear()
-    Window.from_display_module().size = size
+    with warnings.catch_warnings():  # pygame-ceはfrom_display_moduleに非推奨の印をつけている
+        warnings.simplefilter("ignore", DeprecationWarning)
+        Window.from_display_module().size = size
     for ev in pygame.event.get():
         app.handle(ev)
 

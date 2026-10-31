@@ -59,7 +59,7 @@ def test_array_subscript_fixed_only_on_pc1245():
 
 
 def test_exponent_with_space_only_on_pc1245():
-    """PC-1245だけ、指数の中の空白を飛ばす手続き(0522)がある"""
+    """PC-1245だけ、指数の中の空白を飛ばすルーチン(0522)がある"""
     for model, v in (("1251", "1"), ("1245", "100")):
         m, t = boot(model)
         assert value(typ(m, t, 'VAL "1[E] 2"\n')) == v  # [E]は指数のE(4Bh)

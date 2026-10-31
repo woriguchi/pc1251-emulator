@@ -238,6 +238,25 @@ def test_export_after_loading_with_rom(tmp_path, monkeypatch):
     app.close()
 
 
+def test_loading_with_rom_clears_span(tmp_path, monkeypatch):
+    """ROMのある本体でも、プログラムを読み込むと前に決めた書き出す範囲は消える。
+    「読み込む前に戻す」と、決めた範囲も戻る"""
+    from sc61box import programs
+
+    src = tmp_path / "late.hex"
+    src.write_text("# run: CALL &C100\nC100 37\n", "utf-8")
+    app = _rom_app(tmp_path, monkeypatch)
+    b = app.bench
+    b.set_span(0xC000, 0xC007)
+    app.open_program(programs.load_program(str(src)))
+    for _ in range(5):
+        app.frame()
+    assert b.start == 0xC100 and b.span is None and b.export_ranges() == [(0xC100, 0xC101)]
+    app.undo_loading()
+    assert b.span == (0xC000, 0xC008)
+    app.close()
+
+
 JUMP_CODE = bytes.fromhex("79C020") + bytes(29) + bytes.fromhex("027F10F8005237")
 
 

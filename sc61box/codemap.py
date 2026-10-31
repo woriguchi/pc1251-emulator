@@ -1,7 +1,7 @@
 """マシン語の作業欄の逆アセンブルで、RAMの番地ごとに命令かデータかを見分ける
 
 番地ごとに、命令の頭(head)、命令の続きのバイト(body)、データ(data)のどれかと、そう決めた
-わけを持つ。わけは次の4つ。
+理由を持つ。理由は次の4つ。
 
 - executed: 作業欄を使っているあいだに、CPUがその番地から命令を読んだ
 - flow: 入口(開始番地、BASICのCALLの番地、止める所、実行した命令、DTCの表の行き先)から
@@ -24,7 +24,7 @@ from . import disasm
 
 # 番地ごとの種類
 NONE, HEAD, BODY, DATA, DATA_BODY = 0, 1, 2, 3, 4  # DATAはデータの行の頭
-# わけ(細かく分けて持ち、外へはexecuted・flow・guessed・userの4つで見せる)
+# 理由(細かく分けて持ち、外へはexecuted・flow・guessed・userの4つで見せる)
 EXEC, FLOW, TABLE, GUESS, TEXT, FILL, JUNK, USER, NOEND = 1, 2, 3, 4, 5, 6, 7, 8, 9
 REASONS = {EXEC: "executed", FLOW: "flow", TABLE: "flow", GUESS: "guessed", TEXT: "guessed",
            FILL: "guessed", JUNK: "guessed", USER: "user", NOEND: "guessed"}  # fmt: skip
@@ -43,7 +43,7 @@ def printable(v: int) -> bool:
 
 
 class CodeMap:
-    """番地ごとの種類とわけ。build()で作る"""
+    """番地ごとの種類と理由。build()で作る"""
 
     def __init__(self, read: Callable[[int], int]) -> None:
         self.read = read
@@ -53,7 +53,7 @@ class CodeMap:
 
     # ---- 見る ----
     def state(self, a: int) -> tuple[str, str]:
-        """番地aの(種類, わけ)。種類はhead・body・data、わけはexecuted・flow・guessed・user。
+        """番地aの(種類, 理由)。種類はhead・body・data、理由はexecuted・flow・guessed・user。
         見分けていない番地は("", "")。guessedの命令(headかbody)は、命令かどうかわからないもの"""
         k = self.kind[a & 0xFFFF]
         if not k:
@@ -130,8 +130,8 @@ class CodeMap:
         return vals in ({0x00}, {0xFF})
 
     def follow(self, entries: Iterable[tuple[int, int]], in_ram: Callable[[int], bool]) -> None:
-        """入口(番地, わけ)から命令の流れをたどる。たどった命令のわけは、入口の命令が入口の
-        わけ、続く命令はflow(実行した命令はexecutedのまま)"""
+        """入口(番地, 理由)から命令の流れをたどる。たどった命令の理由は、入口の命令が入口の
+        理由、続く命令はflow(実行した命令はexecutedのまま)"""
         todo: list[tuple[int, int, int | None]] = [(a, why, None) for a, why in entries]
         done: set[int] = set()
         while todo:

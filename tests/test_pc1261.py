@@ -43,6 +43,19 @@ def test_open_bus_reads_high_byte():
     assert m.read(0x7FFF) == 0x7F
 
 
+def test_hidden_symbol_right_of_error():
+    """ERRORの右の字のない横棒は207Cのビット6で点く(実機で確かめた)"""
+    m, t = boot()
+    typ(m, t, "POKE &207C,&40\n")
+    assert "HIDDEN" in m.symbols()
+    typ(m, t, "POKE &207C,0\n")
+    assert "HIDDEN" not in m.symbols()
+    pygame.init()
+    pygame.display.set_mode((display.OUT_W, display.OUT_H))
+    panel = display.Panel("1261")
+    assert panel.symbols["HIDDEN"][0] > panel.symbols["ERROR"][0]
+
+
 def test_pc1260_has_4kb():
     m, t = boot("1260")
     assert m.model.ram == (0x5800, 0x6800)
@@ -51,7 +64,7 @@ def test_pc1260_has_4kb():
 
 
 def test_expression_uses_lcd_chip_ram():
-    """式の計算はROMが2880-28FFを積み上げに使う(書けないとERROR 1になる)"""
+    """式の計算はROMが2880-28FFをスタックに使う(書けないとERROR 1になる)"""
     m, t = boot()
     typ(m, t, "1+2*3/7\n")
     assert lines(m)[1].strip() == "1.857142857"
@@ -219,7 +232,7 @@ def test_bouncing_ball_uses_both_lines():
 
 def test_lc3_compiler_sample():
     """コンパイラLC-3の見本のブロック崩しを、コンパイルして動かす。ブロックとパドル
-    (液晶RAMの鏡の27xxに書かれる)が出て、2でパドルが下がり、打ち返さなければGAME OVERになる"""
+    (液晶RAMのミラーの27xxに書かれる)が出て、2でパドルが下がり、打ち返さなければGAME OVERになる"""
     prog = programs.find("lc3-block", "1261")
     assert prog is not None
     assert prog.setup == "EQU#43" and prog.mode == "PRO"
@@ -318,3 +331,90 @@ def test_lowercase_after_poke():
     t.add_keys([["SHIFT"], ["8"]])
     typ(m, t, "")
     assert "KANA" in m.symbols() and "SMALL" not in m.symbols()
+
+
+# ---- # ram: でRAMの終わりを広げる ----
+def test_ram_top_extends_and_shrinks():
+    """RAMの終わりは、ROMや液晶RAMにかかるまで広げられ、既定に戻せる。広げた所は0で始まり、
+    戻すとつながっていない番地に戻る"""
+    m = PC1251(model="1261")
+    assert m.ram_top_ok(0x8000) and not m.ram_top_ok(0x8001)
+    assert m.ram_top_ok(0x4000) and m.ram_top_ok(None)  # 既定より下には狭めない
+    m.set_ram_top(0x8000)
+    assert m.model.ram == (0x4000, 0x8000) and m.read(0x7FFF) == 0
+    m.write(0x7FFF, 5)
+    assert m.read(0x7FFF) == 5 and m.writable(0x7FFF)
+    m.set_ram_top(None)
+    assert m.model.ram == (0x4000, 0x6800) and m.read(0x7FFF) == 0x7F
+    m.write(0x7FFF, 5)
+    assert m.read(0x7FFF) == 0x7F
+    # PC-1251はF800の液晶RAMの手前まで、PC-1245はE800の液晶RAMのミラーの手前まで
+    assert PC1251(model="1251").ram_top_ok(0xF800) and not PC1251(model="1251").ram_top_ok(0xF801)
+    assert PC1251(model="1245").ram_top_ok(0xE800) and not PC1251(model="1245").ram_top_ok(0xE900)
+
+
+def test_state_restores_ram_top():
+    """状態には保存したときのRAMの終わりが入っていて、戻すとその終わりになる"""
+    m = PC1251(model="1261")
+    plain = m.snapshot()
+    m.set_ram_top(0x8000)
+    m.write(0x7000, 0x37)
+    wide = m.snapshot()
+    m.restore(plain)
+    assert m.model.ram == (0x4000, 0x6800) and m.read(0x7000) == 0x70
+    m.restore(wide)
+    assert m.model.ram == (0x4000, 0x8000) and m.read(0x7000) == 0x37
+
+
+def _ram_hex(tmp_path, name="wide", ram="# ram: 6800-7FFF\n"):
+    d = tmp_path / "pc1261"
+    d.mkdir(exist_ok=True)
+    path = d / f"{name}.hex"
+    path.write_text(f"# title: {name}\n{ram}# run: CALL &7000\n7000 37\n", encoding="utf-8")
+    return str(path)
+
+
+def test_program_ram_directive(tmp_path):
+    prog = programs.load_program(_ram_hex(tmp_path))
+    assert prog.ram == (0x6800, 0x8000) and prog.ram_top == 0x8000 and not prog.errors
+    assert prog.runs_on("1261") and prog.runs_on("1260")
+    bad = programs.load_program(_ram_hex(tmp_path, "bad", "# ram: 6800\n"))
+    assert bad.errors and "# ram:" in bad.errors[0]
+    # 置き場所の直下に置いたものは、広げたRAMに収まる機種で動く
+    top = tmp_path / "top.hex"
+    top.write_text("# ram: 6800-7FFF\n7F00 37\n", encoding="utf-8")
+    assert programs.load_program(str(top)).inferred == ["1261"]  # PC-1350は7000から液晶RAM
+    top.write_text("7F00 37\n", encoding="utf-8")
+    assert programs.load_program(str(top)).inferred == []
+
+
+def test_open_program_extends_ram_and_keeps_it(tmp_path, monkeypatch):
+    """# ram: のプログラムを読み込むとRAMが広がり、終わって起動し直しても広がったまま。
+    # ram: のないプログラムを読み込むと機種のRAMに戻り、読み込む前に戻すと広がる"""
+    monkeypatch.setenv("SC61BOX_PROGRAMS", str(tmp_path))
+    wide = programs.load_program(_ram_hex(tmp_path))
+    app = make_app("1261", frames=3, fresh=False)
+    app.open_program(wide, run=False)
+    assert app.m.model.ram == (0x4000, 0x8000) and app.m.read(0x7000) == 0x37
+    assert app.bench.ram == app.m.model.ram
+    app.close()
+    app = make_app("1261", frames=3, fresh=False)
+    assert app.m.model.ram == (0x4000, 0x8000) and app.m.read(0x7000) == 0x37
+    plain = programs.Program(name="plain", title="plain", basic='10 PRINT "A"\n', run="RUN")
+    app.open_program(plain, run=False)
+    assert app.m.model.ram == (0x4000, 0x6800) and app.m.read(0x7000) == 0x70
+    app.undo_loading()
+    assert app.m.model.ram == (0x4000, 0x8000) and app.m.read(0x7000) == 0x37
+    # 広げられない範囲は読み込まない
+    rom = programs.load_program(_ram_hex(tmp_path, "rom", "# ram: 6800-8000\n"))
+    app.open_program(rom, run=False)
+    assert "ROM" in app.status and app.m.model.ram == (0x4000, 0x8000)
+    # 広げたRAMに書くのに# ram: のないプログラムは、RAMが戻ると外になるので読み込まない
+    narrow = programs.load_program(_ram_hex(tmp_path, "narrow", ""))
+    app.open_program(narrow, run=False)
+    assert "7000" in app.status and app.m.model.ram == (0x4000, 0x8000)
+    # 書き出しの頭と、状態に書くプログラムの情報に# ram: が残る
+    assert app._ram_line() == "# ram: 6800-7FFF\n"
+    back = app._saved_prog(app._prog_fields(wide))
+    assert back is not None and back.ram == (0x6800, 0x8000)
+    app.close()

@@ -404,10 +404,10 @@ def test_overlapping_data_ranges_merge():
 
 
 def test_rewrite_through_mirror_forgets_executed():
-    """鏡の番地から実行した命令も、RAMの番地を書き換えれば「実行した」ではなくなる"""
+    """ミラーの番地から実行した命令も、RAMの番地を書き換えれば「実行した」ではなくなる"""
     m, b = bench_with([(0xB800, bytes.fromhex("020137"))], start=0xB000)
     b.step()
-    b.step()  # 鏡のB000でLIA 01を実行
+    b.step()  # ミラーのB000でLIA 01を実行
     assert b.code_map().state(0xB800) == ("head", "executed")
     b.write(0xB800, 0x37)
     assert b.code_map().state(0xB800)[1] != "executed"
@@ -489,19 +489,19 @@ def test_after_keeps_own_data_range(tmp_path):
 
 
 def test_load_through_mirror_cuts_data_mark():
-    """鏡の番地へ読み込んでも、RAMの番地にあるデータの指定を切る"""
+    """ミラーの番地へ読み込んでも、RAMの番地にあるデータの指定を切る"""
     _m, b = bench_with([(0xB800, b"\x37" * 0x30)])
     b.set_mark(0xB801, "data")
     b.load_blocks([(0xB010, bytes.fromhex("020137"))], 0xB810)
     assert b.marks == {0xB801: "data", 0xB810: "end"}
     cm = b.code_map()
     assert cm.state(0xB80F) == ("data", "user") and cm.state(0xB810) == ("head", "flow")
-    b.use_data([(0xB020, 0xB028)])  # # data: を鏡の番地で書いても、RAMの番地に置く
+    b.use_data([(0xB020, 0xB028)])  # # data: をミラーの番地で書いても、RAMの番地に置く
     assert b.marks.get(0xB820) == "data" and b.marks.get(0xB828) == "end"
 
 
 def test_data_range_across_mirror_edge():
-    """鏡の境をまたぐ# data: の範囲は、RAMの番地のひと続きごとに分けて置く(PC-1251の
+    """ミラーの境をまたぐ# data: の範囲は、RAMの番地のひと続きごとに分けて置く(PC-1251の
     B7FC〜B803は、BFFC〜BFFFとB800〜B803)"""
     _m, b = bench_with([(0xB800, b"\x37" * 0x10), (0xBFF0, b"\x37" * 0x10)])
     b.use_data([(0xB7FC, 0xB804)])

@@ -722,7 +722,7 @@ def test_grid_disappears_when_power_is_off():
 
 
 def test_sound_has_no_gaps_between_frames():
-    """1フレーム(CLOCK/30サイクル)ずつ音を作っても、1秒でちょうどRATE個の標本になる"""
+    """1フレーム(CLOCK/30サイクル)ずつ音を作っても、1秒でちょうどRATE個のサンプルになる"""
     from sc61box.audio import RATE, Buzzer
     from sc61box.machine import CLOCK
 
@@ -920,7 +920,7 @@ def test_help_closes_on_input():
 
 
 class _Speaker:
-    """鳴らす出口の代わりに、渡された標本をためる(無音のフレームは空)"""
+    """音の出力先の代わりに、渡されたサンプルをためる(無音のフレームは空)"""
 
     keep_silent = False
 
@@ -948,7 +948,7 @@ def _capture(app) -> list[bytes]:
 
 
 def test_power_on_pcm_is_quiet():
-    """起動したときと、スイッチを切って入れ直したときに、作った音の標本がほぼ0のまま"""
+    """起動したときと、スイッチを切って入れ直したときに、作った音のサンプルがほぼ0のまま"""
     from array import array
 
     app = make_app()  # 起動の最初のフレームから録る
@@ -971,7 +971,7 @@ def test_power_on_pcm_is_quiet():
 
 
 def test_sound_at_other_speeds():
-    """1倍以外でも音が出る。標本の数は実時間ぶんのまま、音の高さが倍率だけ変わる"""
+    """1倍以外でも音が出る。サンプルの数は実時間ぶんのまま、音の高さが倍率だけ変わる"""
     from array import array
     from itertools import pairwise
 
@@ -1069,7 +1069,7 @@ def test_csave_writes_wav(tmp_path, monkeypatch):
 
 
 def test_timer_flags():
-    """TESTのタイマの印は2msごと・512msごとに立ち、読むと消える。置いておくと約11分で電源が切れる"""
+    """TESTのタイマのフラグは2msごと・512msごとに立ち、読むと消える。置いておくと約11分で電源が切れる"""
     from sc61box.machine import CLOCK, PC1251, TICK_2MS
 
     m = PC1251()
@@ -1123,7 +1123,7 @@ def test_lcd_ram_mirrors():
 
 
 def _queue_run(fps: float, clock: float, jitter_ms: float, seconds: float = 60) -> tuple[int, int]:
-    """SoundQueueにフレームごとに標本を積み、装置が512標本ずつ取っていく様子をまねる。
+    """SoundQueueにフレームごとにサンプルを積み、装置が512サンプルずつ取っていく様子をまねる。
     clockは装置の時計の速さの比。(音が切れた回数, 積まずに捨てた回数)を返す"""
     import random
 
@@ -1163,7 +1163,7 @@ def _queue_run(fps: float, clock: float, jitter_ms: float, seconds: float = 60) 
 
 
 def test_sound_queue_keeps_up():
-    """フレームの速さが揺れても、ときどき40ms遅れても、装置の時計とずれても、待ち行列が
+    """フレームの速さが揺れても、ときどき40ms遅れても、装置の時計とずれても、キューが
     尽きず、あふれもしない"""
     for fps in (29.9, 30.0, 30.3):
         for clock in (0.995, 1.0, 1.005):

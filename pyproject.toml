@@ -1,6 +1,6 @@
 [project]
 name = "sc61box"
-version = "0.6.0"
+version = "0.6.1"
 description = "SHARPのポケコン(PC-1251/1245/1261/1350)のエミュレータ(SC61860を命令単位で実行し、ROMを動かす)"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -8,7 +8,7 @@ license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "origuchi" }]
 dependencies = [
-    "pygame>=2.5",
+    "pygame-ce>=2.5",
     "pillow>=10.0",
     "typer>=0.12",
     "imageio-ffmpeg>=0.6.0",

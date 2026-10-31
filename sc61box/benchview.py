@@ -48,7 +48,7 @@ DATA_FG = (134, 172, 160)  # データの行
 
 
 def why_mark(why: str) -> str:
-    """逆アセンブルの行の右に出す、命令かデータかを決めたわけの1字"""
+    """逆アセンブルの行の右に出す、命令かデータかを決めた理由の1字"""
     # 言語によらない記号にする。いちばん多い静的解析の命令は目立たない「.」、実行済みの
     # 命令は確かめたので「✓」、推定は「?」、ユーザ指定は「U」(user)
     marks = {"executed": "✓", "guessed": "?", "flow": ".", "user": "U"}
@@ -56,7 +56,7 @@ def why_mark(why: str) -> str:
 
 
 def why_text(cm: codemap.CodeMap, a: int) -> str:
-    """番地aの行を命令かデータに決めたわけ(印にマウスを載せたときに出す)"""
+    """番地aの行を命令かデータに決めた理由(印にマウスを載せたときに出す)"""
     code, data = cm.why[a & 0xFFFF], cm.state(a)[0] == "data"
     if code == codemap.EXEC:
         return tr("実行済みの命令")
@@ -126,7 +126,9 @@ class BenchView:
         self.focus = False
         # 書き出す範囲と、それを求めた時刻(RAMを調べるので、毎フレームは求めない)
         self._ranges: tuple[list[tuple[int, int]], float] = ([], 0.0)
-        self.why_at = -1  # マウスを載せている、逆アセンブルの行のわけの印の番地
+        self._ranges_span: tuple[int, int] | None = None  # 範囲を求めたときの自分で決めた範囲
+        self.span_hover = False  # 書き出す範囲の行にマウスを載せているか
+        self.why_at = -1  # マウスを載せている、逆アセンブルの行の理由の印の番地
 
     def say(self, text: str, seconds: float = 3.0, ok: bool = False) -> None:
         """作業欄の下に短く出す知らせ。okなら済んだことの知らせ(ふつうは打てなかったなど)"""
@@ -351,26 +353,46 @@ class BenchView:
     def _export_line(self, dst: pygame.Surface, x0: int, y: int) -> int:
         """書き出しのボタン(右端に取り消しとやり直しのボタン)、次の行から書き出す範囲と合計の
         バイト数(作業欄の幅で折り返す)。ボタンはいつも左端に置き、範囲がいくつあっても位置が
-        変わらないようにする。ボタンを押すと書き出す(⌘Eと同じ)"""
+        変わらないようにする。ボタンを押すと書き出す(⌘E・⇧⌘Eと同じ)。範囲の行をクリック
+        すると、範囲を打てる"""
+        b = self.b
         ranges, at = self._ranges
-        if time.monotonic() - at > 0.5:  # RAMを調べるので、0.5秒に1回だけ求める
-            ranges = self.b.export_ranges()
-            self._ranges = (ranges, time.monotonic())
+        # RAMを調べるので、0.5秒に1回だけ求める(自分で範囲を決めたときはすぐ)
+        if time.monotonic() - at > 0.5 or self._ranges_span != b.span:
+            ranges = b.export_ranges()
+            self._ranges, self._ranges_span = (ranges, time.monotonic()), b.span
         self._undo_buttons(dst, x0 + PANE_W - 24, y)
-        if not ranges:
+        if ranges:
+            x = x0
+            for label, kind in (
+                (tr(".hexに書き出す {c}E", c=self.cmd), "export"),
+                (tr("ダンプリスト"), "listing"),  # ショートカット(⇧⌘E)はメニューと説明に出す
+            ):
+                btn = pygame.Rect(x, y - 2, self.jfont.size(label)[0] + 16, 24)
+                pygame.draw.rect(dst, BTN, btn, border_radius=5)
+                self._text(dst, x + 8, y + 1, label, FG, self.jfont)
+                self.hits.append((btn, kind, 0))
+                x = btn.right + 6
+        else:
             self._text(dst, x0, y, tr("書き出すダンプはまだありません"), DIM, self.jfont)
-            # 範囲の1行分をあけておき、取り消しで範囲がなくなってもダンプの位置を変えない
-            return y + 26 + 20 + 4
-        label = tr(".hexに書き出す {c}E", c=self.cmd)
-        btn = pygame.Rect(x0, y - 2, self.jfont.size(label)[0] + 16, 24)
-        pygame.draw.rect(dst, BTN, btn, border_radius=5)
-        self._text(dst, x0 + 8, y + 1, label, FG, self.jfont)
-        self.hits.append((btn, "export", 0))
-        size = sum(hi - lo for lo, hi in ranges)
         y += 26
+        if b.span is not None:
+            self._auto_button(dst, x0 + PANE_W - 24, y)
+        if b.span_buf is not None:
+            return self._span_field(dst, x0, y) + 4
+        if not ranges:
+            # 範囲の1行分をあけておき、取り消しで範囲がなくなってもダンプの位置を変えない。
+            # 範囲を決める入口も置く
+            x = self._text(dst, x0, y, tr("範囲を指定する"), FG if self.span_hover else DIM,
+                           self.jfont)  # fmt: skip
+            self.hits.append((pygame.Rect(x0, y, x - x0, 20), "span", 0))
+            return y + 20 + 4
+        size = sum(hi - lo for lo, hi in ranges)
         # 範囲は2行まで。入りきらなければ、残りの数を出す
         width = PANE_W - 24
-        if len(ranges) > 1:
+        if b.span is not None:
+            head = tr("範囲(指定、合計{n}バイト) ", n=size)
+        elif len(ranges) > 1:
             head = tr("範囲({places}か所、合計{n}バイト) ", places=len(ranges), n=size)
         else:
             head = tr("範囲(合計{n}バイト) ", n=size)
@@ -388,10 +410,37 @@ class BenchView:
                 line = "　　 "
             line += part
         lines.append(line)
+        top = y
         for t in lines:
-            self._text(dst, x0, y, t, DIM, self.jfont)
+            self._text(dst, x0, y, t, FG if self.span_hover else DIM, self.jfont)
             y += 20
+        self.hits.append((pygame.Rect(x0, top, width, y - top), "span", 0))
         return y + 4
+
+    def _auto_button(self, dst: pygame.Surface, right: int, y: int) -> None:
+        """自分で決めた範囲を、書いた所から決める範囲に戻すボタン(範囲の行の右端)"""
+        label = tr("自動に戻す")
+        w = self.jfont.size(label)[0] + 16
+        btn = pygame.Rect(right - w, y - 2, w, 22)
+        pygame.draw.rect(dst, BTN, btn, border_radius=5)
+        self._text(dst, btn.x + 8, y, label, FG, self.jfont)
+        self.hits.append((btn, "spanauto", 0))
+
+    def _span_field(self, dst: pygame.Surface, x0: int, y: int) -> int:
+        """範囲を打っているあいだの欄(始めと終わりの番地を16進表記4桁ずつ)"""
+        b, cw = self.b, self.cw
+        x = self._text(dst, x0, y, tr("範囲"), DIM, self.jfont) + 10
+        buf = b.span_buf or ""
+        box = pygame.Rect(x - 4, y - 1, 10 * cw + 8, 20)
+        pygame.draw.rect(dst, CURSOR, box, 1, border_radius=3)
+        for i in range(8):
+            cx = x + (i + 2 * (i >= 4)) * cw
+            if i == len(buf):
+                pygame.draw.rect(dst, CURSOR, (cx, y + 1, cw, self.LH - 2))
+            self._text(dst, cx, y + 1, buf[i] if i < len(buf) else "_", FG)
+        self._text(dst, x + 4 * cw, y, "〜", DIM, self.jfont)
+        self.hits.append((pygame.Rect(x0, y - 1, box.right - x0, 20), "span", 0))
+        return y + 20
 
     def _draw_rest(self, dst: pygame.Surface, rect: pygame.Rect, x0: int, y: int) -> None:
         """ダンプ、逆アセンブル、レジスタ、内部RAM、下の知らせ"""
@@ -408,6 +457,7 @@ class BenchView:
         self._status(dst, x0, rect.bottom - 44, rect.width - 24)
         self._tip(dst, rect)
         self._why_tip(dst, rect)
+        self._span_tip(dst, rect)
 
     def _follow_pc(self) -> None:
         """止まるたび(1命令進めたときも)、ダンプのカーソルをPCの命令に置く。そのあと
@@ -437,7 +487,8 @@ class BenchView:
         at = b.ins_at(b.cursor)
         size = next(b.lines_from(at)).size
         here = {(at + i) & 0xFFFF for i in range(size)}
-        show_cursor = b.start_buf is None  # 開始番地の欄に打っているあいだはカーソルを出さない
+        # 開始番地か範囲の欄に打っているあいだはカーソルを出さない
+        show_cursor = b.start_buf is None and b.span_buf is None
         for r in range(self.rows):
             a = (first + ROW * r) & 0xFFFF
             cur_row = a == b.row
@@ -523,20 +574,30 @@ class BenchView:
                     self._text(dst, end + cw, y, ins.note, DIM, self.jfont)
                 mark = why_mark(why) if kind in ("head", "data") else ""
                 if mark:
-                    # わけの1字は、開始番地の「開始」の左に並べる(重ならない)
+                    # 理由の1字は、開始番地の「開始」の左に並べる(重ならない)
                     img = self.jfont.render(mark, True, DIM if a != self.why_at else FG)
                     mx = x0 + PANE_W - 32 - tag_w - 8 - img.get_width()
                     dst.blit(img, (mx, y - 1))
                     self.hits.append((pygame.Rect(mx - 2, y, img.get_width() + 4, lh), "why", a))
             self.hits.append((pygame.Rect(x, y, 30 * cw, lh), "goto", a))
             y += lh
-        # 右端の印の見方(詳しいわけは、印にマウスを載せると出る)
+        # 右端の印の見方(詳しい理由は、印にマウスを載せると出る)
         legend = tr("✓:実行済み　.:静的解析　?:推定　U:ユーザ指定")
         self._text(dst, x0, y + 1, legend, DIM, self.small)
         return y + lh
 
+    def _span_tip(self, dst: pygame.Surface, rect: pygame.Rect) -> None:
+        """書き出す範囲の行にマウスを載せたら、範囲を打てることを、その行のすぐ下に出す"""
+        if not self.span_hover or self.b.span_buf is not None:
+            return
+        hit = next((r for r, kind, _a in self.hits if kind == "span"), None)
+        if hit is None:
+            return
+        lines = [tr("クリックすると、書き出す範囲を打てます")]
+        self._tooltip(dst, rect, lines, (hit.x, hit.bottom + 2))
+
     def _why_tip(self, dst: pygame.Surface, rect: pygame.Rect) -> None:
-        """マウスを載せた、わけの印の説明を、その行のすぐ下に出す(右に寄せる)"""
+        """マウスを載せた、理由の印の説明を、その行のすぐ下に出す(右に寄せる)"""
         if self.why_at < 0:
             return
         hit = next((r for r, kind, a in self.hits if kind == "why" and a == self.why_at), None)
@@ -631,6 +692,12 @@ class BenchView:
         b, c = self.b, self.cmd
         if b.start_buf is not None:
             return tr("開始番地を16進表記4桁で打つ  {c}Vで貼り付け  Escでやめる", c=c)
+        if b.span_buf is not None:
+            return tr(
+                "始めと終わりの番地を16進表記4桁ずつ打つ  何も打たずにEnterで自動に戻す  "
+                "{c}Vで貼り付け  Escでやめる",
+                c=c,
+            )
         if b.rom and b.state == "run":
             if not self.focus:
                 return tr("作業欄をクリックすると、キーで作業欄のダンプを書けます")
@@ -646,8 +713,8 @@ class BenchView:
         if b.field == "addr":
             return tr("番地を4桁打ってSpace。続けて8バイトを打ってEnter(本のダンプリストと同じ)")
         return tr(
-            "16進表記で打つ  Enterで次の行  {c}Gで実行  {c}Aでカーソルの所を開始番地に  "
-            "{c}Vで貼り付け",
+            "16進表記で打つ  Enterで次の行  Tabで番地を打って飛ぶ  {c}Gで実行  "
+            "{c}Aでカーソルの所を開始番地に  {c}Vで貼り付け",
             c=c,
         )
 

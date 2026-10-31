@@ -40,9 +40,9 @@ EN: dict[str, str | tuple[str, str]] = {
         "F1, F2: RUN, PRO with the MODE key   F3, F4, {c}↑↓: power switch   F5, {c}R: RESET"
     ),
     "ROMなしの作業欄(右)": "Workbench without ROM (on the right)",
-    "0〜9・A〜F: ダンプを書く   Enter: 次の行   Space: 番地からバイトへ   Tab: 番地を打ち直す": (
+    "0〜9・A〜F: ダンプを書く   Enter: 次の行   Space: 番地からバイトへ   Tab: 番地を打って飛ぶ": (
         "0-9, A-F: write the dump   Enter: next line   Space: from address to bytes"
-        "   Tab: retype the address"
+        "   Tab: type an address to jump"
     ),
     "{c}G: 実行・続ける   {s}{c}G: カーソルから実行   {c}.: 一時停止   Esc: 編集に戻る": (
         "{c}G: run, continue   {s}{c}G: run from the cursor   {c}.: pause   Esc: back to editing"
@@ -57,8 +57,11 @@ EN: dict[str, str | tuple[str, str]] = {
         "PageUp, PageDown: one screen   Home, End ({c}←→): start, end of line"
         "   {c}↑↓: start address, end"
     ),
-    "{c}E: 開始番地からを.hexに書き出す   {c}O: プログラムの一覧(.hexのマシン語だけを使う)": (
-        "{c}E: export from the start address to .hex"
+    "{c}E: .hexに書き出す   {s}{c}E: ダンプリストの形(8バイト:チェックサム)で書き出す": (
+        "{c}E: export to .hex   {s}{c}E: export as a dump list (8 bytes:checksum)"
+    ),
+    "範囲の行をクリック: 書き出す範囲を打つ   {c}O: プログラムの一覧(.hexのマシン語だけを使う)": (
+        "Click the range line: type the export range"
         "   {c}O: program list (only the machine code of .hex files)"
     ),
     "実行中のキーは本体へ(Tab: SHIFT  Option: DEF  Delete: CL  Esc: BRK)": (
@@ -97,6 +100,8 @@ EN: dict[str, str | tuple[str, str]] = {
     "実行を再開する": "Resume execution",
     "実行を一時停止する": "Pause execution",
     "ダンプをファイル(.hex)に書き出す": "Export dump to file (.hex)",
+    "ダンプリストの形で書き出す": "Export as dump list",
+    "8バイト:チェックサムの行": "Lines of 8 bytes:checksum",
     "クリップボードからダンプを貼り付ける": "Paste dump from clipboard",
     "プログラムをファイルに書き出す": "Export program to file",
     "クリップボードから打ち込む": "Type in from clipboard",
@@ -156,6 +161,9 @@ EN: dict[str, str | tuple[str, str]] = {
     ),
     "{name}を読み込みません。{addr:04X}番地はRAMの外です": (
         "{name} not loaded: {addr:04X} is outside RAM"
+    ),
+    "{name}を読み込みません。# ram: の{lo:04X}-{hi:04X}はROMか液晶RAMにかかります": (
+        "{name} not loaded: # ram: {lo:04X}-{hi:04X} overlaps ROM or LCD RAM"
     ),
     "ROMがないので、ROMなしでマシン語だけを動かします(右の作業欄)": (
         "No ROM found, so only machine code runs (workbench on the right)"
@@ -324,7 +332,8 @@ EN: dict[str, str | tuple[str, str]] = {
     # ---- 音、ROM、状態のファイル、録画 ----
     "SDL2のライブラリが見つかりません": "SDL2 library not found",
     "ミキサーが{freq}Hzで開かれました": "The mixer opened at {freq} Hz",
-    "SDLの待ち行列が使えないので、mixerで鳴らします({error})": (
+    "ミキサーを開けません": "Cannot open the mixer",
+    "SDLのキューが使えないので、mixerで鳴らします({error})": (
         "SDL audio queue not available, using the mixer ({error})"
     ),
     "音を切ります({error})": "Sound off ({error})",
@@ -397,6 +406,12 @@ EN: dict[str, str | tuple[str, str]] = {
     "{where}{line}行目を16進ダンプとして読めない: {text}": (
         "{where}line {line} is not a hex dump: {text}"
     ),
+    "{where}{line}行目の「:」のあとがチェックサム(16進表記2桁)ではない: {text}": (
+        "{where}line {line} has no 2-digit hex checksum after ':': {text}"
+    ),
+    "{where}{line}行目のチェックサムが合わない(計算すると{sum:02X}): {text}": (
+        "{where}line {line} has a wrong checksum (should be {sum:02X}): {text}"
+    ),
     "# {key}: {name}を読めない({error})": "# {key}: cannot read {name} ({error})",
     # ---- マシン語の作業欄 ----
     "編集中": "editing",
@@ -449,6 +464,27 @@ EN: dict[str, str | tuple[str, str]] = {
     "やり直す": "Redo",
     "書き出すダンプはまだありません": "No dump to export yet",
     ".hexに書き出す {c}E": "Export .hex {c}E",
+    "ダンプリスト": "Dump list",
+    "範囲を指定する": "Set the range",
+    "範囲(指定、合計{n}バイト) ": ("Range set, {n} byte: ", "Range set, {n} bytes: "),
+    "範囲": "Range",
+    "クリックすると、書き出す範囲を打てます": "Click to type the export range",
+    (
+        "始めと終わりの番地を16進表記4桁ずつ打つ  何も打たずにEnterで自動に戻す  "
+        "{c}Vで貼り付け  Escでやめる"
+    ): (
+        "Type the first and last addresses, 4 hex digits each"
+        "  Enter alone goes back to automatic  {c}V pastes  Esc cancels"
+    ),
+    "書き出す範囲を{where}にしました": "Export range set to {where}",
+    "書き出す範囲を自動に戻しました": "Export range is automatic again",
+    "終わりの番地が始めの番地より前です": "The last address is before the first",
+    "貼り付けた文字は範囲ではありません(始めと終わりを16進表記の4桁で)": (
+        "The pasted text is not a range (use two 4-digit hex addresses)"
+    ),
+    "実行中は範囲を打てません": "Cannot type the range while running",
+    "自動に戻す": "Automatic",
+    "番地は16進表記(0〜9、A〜F)で打ちます": "Type addresses in hex (0-9, A-F)",
     "範囲({places}か所、合計{n}バイト) ": (
         "{places} ranges, {n} byte: ",
         "{places} ranges, {n} bytes: ",
@@ -487,8 +523,12 @@ EN: dict[str, str | tuple[str, str]] = {
     "番地を4桁打ってSpace。続けて8バイトを打ってEnter(本のダンプリストと同じ)": (
         "Type a 4-digit address and Space, then 8 bytes and Enter (as in a dump listing)"
     ),
-    "16進表記で打つ  Enterで次の行  {c}Gで実行  {c}Aでカーソルの所を開始番地に  {c}Vで貼り付け": (
-        "Type hex  Enter next line  {c}G run  {c}A start address at cursor  {c}V paste"
+    (
+        "16進表記で打つ  Enterで次の行  Tabで番地を打って飛ぶ  {c}Gで実行  "
+        "{c}Aでカーソルの所を開始番地に  {c}Vで貼り付け"
+    ): (
+        "Type hex  Enter next line  Tab jumps to a typed address  {c}G run"
+        "  {c}A start address at cursor  {c}V paste"
     ),
     # 取り消しとやり直し
     "取り消せる書き込みはありません": "Nothing to undo",
@@ -570,9 +610,9 @@ EN: dict[str, str | tuple[str, str]] = {
     ),
     "液晶の表示をつける(Cポート←01)": "LCD on (port C ← 01)",
     "液晶の表示を消す(Cポート←00)": "LCD off (port C ← 00)",
-    "2msのタイマの印を1回待つ": "wait for one 2 ms timer tick",
-    "2msのタイマの印を2回待つ": "wait for two 2 ms timer ticks",
-    "2msのタイマの印を3回待つ": "wait for three 2 ms timer ticks",
+    "2msのタイマのフラグを1回待つ": "wait for one 2 ms timer tick",
+    "2msのタイマのフラグを2回待つ": "wait for two 2 ms timer ticks",
+    "2msのタイマのフラグを3回待つ": "wait for three 2 ms timer ticks",
     "Aの文字の形の番地−1をXへ(J_ONE)": "glyph address of A, minus 1, into X (J_ONE)",
     # ---- 逆アセンブルの命令とデータ ----
     "ほかは→{addr:04X}": "else→{addr:04X}",
@@ -594,6 +634,9 @@ EN: dict[str, str | tuple[str, str]] = {
     "RAMの外です": "Outside RAM",
     "いまの指定です": "Already marked so",
     "{file}: # data: の{text}が読めない": "{file}: cannot read {text} in # data:",
+    "{file}: # ram: の{text}が読めない(例:# ram: 6800-7FFF)": (
+        "{file}: cannot read {text} in # ram: (e.g. # ram: 6800-7FFF)"
+    ),
     "貼り付けた文字は番地ではありません(16進表記の4桁で)": (
         "The pasted text is not an address (use 4 hex digits)"
     ),

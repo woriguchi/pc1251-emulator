@@ -94,7 +94,7 @@ Three kinds of file can be loaded. A `.bas` and a `.hex` with the same name form
 | `.hex` | hex dump, one `address data` line after another | written straight into RAM |
 | `.bin` | machine-code bytes only | written at the address given by a `# bin:` line in the `.bas` |
 
-A BASIC program typed in the emulator can be exported with Cmd+E (Ctrl+E on Windows) to `~/.sc61box/programs/` as `name-date.bas`. Machine code is not part of the BASIC export; the machine-code workbench exports it to a `.hex` file with "Export .hex". `uv run sc61box --export folder` exports from the saved RAM.
+A BASIC program typed in the emulator can be exported with Cmd+E (Ctrl+E on Windows) to `~/.sc61box/programs/` as `name-date.bas`. Machine code is not part of the BASIC export; the machine-code workbench exports it to a `.hex` file with "Export .hex", or with "Dump list" (Shift+Cmd+E) as lines of 8 bytes and a checksum (`C000 027F10F800523700:12`). Clicking the range line under these buttons lets you type the range to export; "Automatic" goes back to the range worked out from what you wrote. `uv run sc61box --export folder` exports from the saved RAM.
 
 #### BASIC files (.bas)
 
@@ -108,7 +108,7 @@ Pasted text (Cmd+V) and dropped text files other than `.bas` and `.hex` are not 
 
 #### Hex dumps (.hex)
 
-Anything after `;` on a line is a comment. Hex dumps written by the YASM61860 assembler (`c300 : 02 41 37 …`, its `-d` output) can be used as they are.
+Anything after `;` on a line is a comment. A line may end with `:` and a checksum, the low two hex digits of the sum of its bytes, as in magazine dump listings; a line whose checksum does not match, or is not two hex digits, stops the file from loading. Hex dumps written by the YASM61860 assembler (`c300 : 02 41 37 …`, its `-d` output) can be used as they are.
 
 #### Setting lines
 
@@ -127,6 +127,7 @@ Lines starting with `#` are comments, and can carry these settings.
 | `# norom: note` | note shown when the program is loaded without a ROM. `# norom: off` keeps the program out of the list without a ROM |
 | `# data: ranges` | ranges that are data, not code, e.g. `# data: C100-C17F, C200-C20F` (end address included). The workbench disassembly shows them as `DB` rows; ranges you mark as data in the workbench are written here when you export a `.hex` |
 | `# model: models` | models it runs on (see [Where to put programs](#where-to-put-programs)) |
+| `# ram: range` | extends RAM above the model's RAM to the end of the range, e.g. `# ram: 6800-7FFF` on a PC-1261 (for programs that use RAM the real machine does not have; the range must not overlap ROM or LCD RAM). Loading the program extends RAM, and the extension is saved with the RAM on exit; loading a program without `# ram:` restores the model's RAM |
 | `# pad: mapping` | gamepad mapping (see [Gamepad](#gamepad)), as pairs of gamepad input and pocket computer key separated by spaces: `# pad: dpup=8 dpdown=2 dpleft=4 dpright=6 a=SPC` |
 
 - Addresses can be written as `&C300`, `0xC300` or `C300`.
@@ -175,6 +176,7 @@ Click the keys on screen with the mouse. Letters, digits, symbols, Enter, Space 
 | Cmd+R | Ctrl+R | the RESET button on the back |
 | Cmd+T, Shift+Cmd+T | Ctrl+T, Shift+Ctrl+T | faster / slower (½×, 1×, 2×, 4×, 8×; away from 1× the pitch of the sound changes too) |
 | Cmd+E | Ctrl+E | export the BASIC program in memory to a .bas file (while keys go to the workbench, export its dump to a .hex file) |
+| Shift+Cmd+E | Shift+Ctrl+E | while keys go to the workbench, export its dump as a dump list (8 bytes:checksum per line) |
 | Cmd+S | Ctrl+S | save a screenshot |
 | Shift+Cmd+S | Shift+Ctrl+S | save the state (save anywhere) |
 | Shift+Cmd+L | Shift+Ctrl+L | go back to the saved state |
@@ -254,7 +256,7 @@ Start the game from the program list, then hold down the number key (1–6) of t
 
 ### Printer
 
-A printer (a thermal printer that prints 5×7 dot characters) is always connected. When a program prints with `LPRINT` or `LLIST`, a strip of paper comes out below the calculator and feeds a line at a time. On the PC-1251 and PC-1245, pressing SHIFT+ENTER (P↔NP) to show P on the LCD also prints calculations typed by hand.
+A printer (a thermal printer that prints 5×7 dot characters) is always connected. When a program prints with `LPRINT` or `LLIST`, a strip of paper comes out below the calculator and the lines come out one by one at the speed of the real printer (about a second a line), scaled by the speed setting (Cmd+T). When four or more lines are waiting, as after `LLIST` of a long program, they come out faster and are all out in about two and a half seconds. The paper-feed sound is synthesized to resemble a CE-126P; `--mute` silences it. Pressing SHIFT+ENTER (P↔NP) also prints calculations typed by hand; the PC-1251 and PC-1245 show P on the LCD and the PC-1261 shows PRINT, while the PC-1350 has no symbol for it (as on the real machine).
 
 - Scroll with the mouse wheel over the paper to see earlier lines.
 - The printout is saved automatically as a picture of the paper in the program folder as `print-<date>-<time>.png`. Click the location shown to the left of the paper to open the folder.
@@ -352,19 +354,12 @@ The program list, export, shortcuts, DEF keys and cassette audio (wav) work as o
 ## Differences from the real machine
 
 - Cassette input has been checked with recordings of real tapes (they load with `CLOAD`). The wavs the emulator writes have not been played into a real machine yet.
-- The printer's printing speed and paper feed key are not reproduced.
+- The printer's paper feed key is not reproduced.
+- The printer takes each byte at once, so programs do not wait for printing.
 - Different ROM versions have not been checked.
 - BASIC's `PEEK` can read the internal ROM here (according to the documentation, on the real machine only the `DATA` instruction can read it).
 
 The memory map, I/O ports and LCD RAM layout are summarized in an appendix of the manual ([`doc/manual.pdf`](doc/manual.pdf), in Japanese).
-
-## Tests
-
-```sh
-uv run pytest -q tests
-```
-
-Tests that need a ROM are skipped when it isn't there.
 
 ## Development
 
